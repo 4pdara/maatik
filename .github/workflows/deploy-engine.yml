@@ -52,7 +52,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          URL=$(grep -o 'https://[a-z0-9-]*--maatik-engine-api\.modal\.run' "$RUNNER_TEMP/deploy.log" | head -1)
+          URL=$(grep -o 'https://[a-z0-9-]*--maatik-engine-api\.\([a-z0-9-]*\.\)\?modal\.run' "$RUNNER_TEMP/deploy.log" | head -1)
           test -n "$URL"
           curl -sS -f -X POST \
             -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
