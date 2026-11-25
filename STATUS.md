@@ -8,6 +8,14 @@
 - 25.11.2026: הוקם המאגר 4pdara/maatik. נשמרו CLAUDE.md, ‏docs/SPEC.md, ‏docs/DESIGN.md, ‏docs/RISKS.md, ‏STATUS.md, ונוסף ‎.gitignore (‏data/, ‏‎.env, ‏‎*.mlmodel, ‏‎*.safetensors, ‏‎*.gguf). commit ראשון: "docs: spec, design and rules for maatik".
 - 25.11.2026 (סשן 2): התחלת אבן דרך 1. נבדק אם שני מודלי הבסיס זמינים להורדה. העבודה נעצרה לפני בדיקת ההיתכנות (א), ראה "חוסמים".
 - 25.11.2026 (סשן 3): התקבלו שתי סריקות ממרוקו ונשמרו ב-data/manuscripts/morocco-a ו-morocco-b (מחוץ ל-git). בדיקת עשן מקומית של Kraken עברה. בדיקה (א) ב-Modal נחסמה, ראה "חוסמים".
+- 25.11.2026 (סשן 3, המשך): נכתבו חבילת המנוע, המעטפת ל-Modal ותהליך הפריסה ב-GitHub Actions (ראה "מומש"). אוריאל הוסיף את הסודות למאגר. הפריסה לא התחילה בגלל חיוב בחשבון GitHub.
+
+## מומש (לא נבדק ב-Modal)
+- engine/maatik_engine: חבילת Python. `python -m maatik_engine recognize PAGE.jpg OUT.alto.xml --model small.safetensors` מריץ סגמנטציה וזיהוי ב-Kraken ומדפיס סיכום (שורות, מילים, ביטחון, מילים לא בטוחות, משך).
+- engine/modal_app.py: מעטפת דקה ל-Modal. פונקציית recognize על מעבד (2 ליבות, 4 GiB) ו-API ב-HTTPS עם אסימון בכותרת Authorization: העלאת עמוד, הפעלת זיהוי כעבודת רקע, מצב עבודה, קבלת ALTO, ו-runs.jsonl עם משך ועלות משוערת. אסימון ה-API נגזר מ-MODAL_TOKEN_SECRET (engine/maatik_engine/auth.py).
+- .github/workflows/deploy-engine.yml: פריסה ל-Modal בכל דחיפה שמשנה את engine/.
+- engine/scripts/engine_client.py: לקוח ל-API (health, upload, recognize, runs).
+- הגרסאות נעולות: kraken 7.2, ‏torch 2.14.0 ו-torchvision 0.29.1 (מאינדקס ה-CPU של PyTorch), ‏fastapi 0.165.0, ‏modal 1.6.4, ‏Python 3.12 בתמונה של Modal.
 
 ## מה נבדק בפועל
 - PP-OCRv6 small: זמין ב-Hugging Face (small-models-for-glam/kraken-ppocrv6-small, commit ‏49c249b, הקובץ small.safetensors). דורש Kraken 7.1 ומעלה. הגרסה האחרונה ב-PyPI: 7.2. נבדק ב-25.11.2026.
@@ -19,11 +27,13 @@
   - הטקסט שיוצא הוא עברית קריאה בחלקה, עם הרבה שגיאות. לא נמדד CER: אין עדיין תעתוק אמת.
   - בעיה שנראתה: ב-morocco-a סדר השורות מערבב בין שני העמודים שבתמונה (שורה מהעמוד הימני ואחריה שורה מהשמאלי). צריך לחתוך תמונה של שני עמודים לשני עמודים לפני הזיהוי, או לטפל בסדר הקריאה.
 - ‏Modal client 1.6.4 הותקן, אבל `modal` מחזיר "Could not connect to the Modal server". הסיבה: הלקוח של Modal מדבר gRPC, והפרוקסי של סביבת הענן של Claude Code לא מעביר gRPC (מתועד אצלו כלא נתמך). ‏api.modal.com עצמו נגיש ב-HTTPS רגיל.
+- ‏`python -m maatik_engine recognize` רץ מקומית על morocco-b ונתן את אותן תוצאות כמו הבדיקה הידנית (27 שורות, 387 מילים, ביטחון ממוצע 0.799). ‏modal_app.py נטען בלי שגיאה (שתי פונקציות: recognize, ‏api).
+- ריצת הפריסה הראשונה ב-GitHub Actions (run 45709637542, ‏commit eebeaf7) לא התחילה. ההודעה של GitHub: "The job was not started because recent account payments have failed or your spending limit needs to be increased."
 - בדיקות ההיתכנות (א), (ב) ו-(ג) לא הורצו ב-Modal.
 - קרדיט Modal שנוצל: 0 דולר (לא בוצעה אף הרצה).
 
 ## חוסמים
-1. **אין חיבור ל-Modal מסשן ענן.** הלקוח של Modal (gRPC) לא עובר בפרוקסי. דרכים לעקוף: (1) לחבר את המחשב של אוריאל לסשן (Remote Control) ולהריץ ממנו את פקודות Modal; (2) פריסה אחת דרך GitHub Actions עם האסימונים כסודות של המאגר, ומשם והלאה העבודה מול ה-API של המנוע ב-HTTPS רגיל, שעובר בפרוקסי. ממתין להחלטה.
+1. **אין חיבור ל-Modal מסשן ענן.** הלקוח של Modal (gRPC) לא עובר בפרוקסי. דרכים לעקוף: (1) לחבר את המחשב של אוריאל לסשן (Remote Control) ולהריץ ממנו את פקודות Modal; (2) פריסה אחת דרך GitHub Actions עם האסימונים כסודות של המאגר, ומשם והלאה העבודה מול ה-API של המנוע ב-HTTPS רגיל, שעובר בפרוקסי. (2) נוסה ונחסם: GitHub לא מריץ Actions בחשבון בגלל תשלום שנכשל או מגבלת הוצאה. ממתין להחלטה של אוריאל: לסדר את החיוב ב-GitHub, או לחבר את המחשב.
 2. **מודל הבסיס השני נמשך.** HeOCR R3h נמחק מ-Zenodo, ולכן בדיקה (ב) תיכשל עליו כמו שהיא מוגדרת היום ("שני מודלי הבסיס"). אותו דבר ל-HeOCR R4d, המועמד לסגמנטציה. נדרשת החלטה: להמשיך עם PP-OCRv6 small לבד מול מודל הסגמנטציה של Kraken, או לחפש מועמד שני.
 
 ## הבא
