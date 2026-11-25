@@ -6,6 +6,7 @@ Env:  MAATIK_ENGINE_URL  e.g. https://<workspace>--maatik-engine-api.modal.run
     python engine/scripts/engine_client.py health
     python engine/scripts/engine_client.py upload SLUG PAGE FILE.jpg
     python engine/scripts/engine_client.py recognize SLUG PAGE [--model ppocrv6-medium] [--out FILE.alto.xml]
+    python engine/scripts/engine_client.py feasibility-c [--model ppocrv6-medium] [--lines 60] [--epochs 2]
     python engine/scripts/engine_client.py runs SLUG
 """
 
@@ -39,6 +40,11 @@ def main() -> None:
     r.add_argument("slug"); r.add_argument("page", type=int); r.add_argument("--out", type=Path)
     r.add_argument("--wait", type=int, default=1800)
     r.add_argument("--model", default="ppocrv6-small")
+    f = sub.add_parser("feasibility-c")
+    f.add_argument("--model", default="ppocrv6-small")
+    f.add_argument("--lines", type=int, default=60)
+    f.add_argument("--epochs", type=int, default=2)
+    f.add_argument("--wait", type=int, default=3600)
     n = sub.add_parser("runs")
     n.add_argument("slug")
     a = p.parse_args()
@@ -55,8 +61,12 @@ def main() -> None:
         resp.raise_for_status(); print(resp.text, end=""); return
     else:
         t0 = time.monotonic()
-        resp = s.post(f"{base}/v1/manuscripts/{a.slug}/pages/{a.page}/recognize",
-                      params={"model": a.model}, timeout=120)
+        if a.cmd == "feasibility-c":
+            resp = s.post(f"{base}/v1/feasibility/c", timeout=120,
+                          params={"model": a.model, "lines": a.lines, "epochs": a.epochs})
+        else:
+            resp = s.post(f"{base}/v1/manuscripts/{a.slug}/pages/{a.page}/recognize",
+                          params={"model": a.model}, timeout=120)
         resp.raise_for_status()
         job = resp.json()["job_id"]
         print(f"job {job}", file=sys.stderr)
@@ -69,7 +79,7 @@ def main() -> None:
         out = resp.json()
         out["client_wall_seconds"] = round(time.monotonic() - t0, 1)
         print(json.dumps(out, ensure_ascii=False, indent=2))
-        if a.out and out.get("status") == "done":
+        if getattr(a, "out", None) and out.get("status") == "done":
             alto = s.get(f"{base}/v1/manuscripts/{a.slug}/pages/{a.page}/alto",
                          params={"model": a.model}, timeout=120)
             alto.raise_for_status()

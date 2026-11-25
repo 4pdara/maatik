@@ -25,6 +25,15 @@ VOLUME_NAME = "maatik-data"
 API_SECRET_NAME = "maatik-engine-api"
 DATA = Path("/data")
 MODELS = Path("/models")
+ASSETS = Path("/assets")
+
+# Feasibility test (c) material, pinned by hash.
+# CC0 text lines (Tsel HaOlam, Amsterdam 1733), HeOCR htext release on Zenodo 24521432.
+TSEL_ZIP_URL = "https://zenodo.org/records/24521432/files/htext-tsel-haolam-v1.zip?download=1"
+TSEL_ZIP_SHA256 = "c3fa59e87e4d7cfcf5d069a0add9a4b811dff9cfb08cbb8d65e60f6b7024c39b"
+# Frank Ruhl Libre Regular (SIL OFL 1.1) from Google Fonts, used only to render those lines.
+FONT_URL = "https://fonts.gstatic.com/s/frankruhllibre/v23/j8_96_fAw7jrcalD7oKYNX0QfAnPcbzNEEB7OoicBw7FYVqQ.ttf"
+FONT_SHA256 = "89478e290c257456eb61d846bea77ab06d944f09c7f84000c4fd8cdedde6845a"
 
 # Recognition worker size. Prices from modal.com/pricing, read 25.11.2026:
 # CPU $0.0000131 per physical core per second, memory $0.00000222 per GiB per second.
@@ -53,6 +62,14 @@ image = (
                 f"echo '{m['sha256']}  {MODELS / key / m['filename']}' | sha256sum -c -",
             )
         ]
+    )
+    .apt_install("libfribidi0", "curl")
+    .run_commands(
+        f"mkdir -p {ASSETS}",
+        f"curl -sSfL -o {ASSETS}/tsel.zip '{TSEL_ZIP_URL}'",
+        f"echo '{TSEL_ZIP_SHA256}  {ASSETS}/tsel.zip' | sha256sum -c -",
+        f"curl -sSfL -o {ASSETS}/FrankRuhlLibre-Regular.ttf '{FONT_URL}'",
+        f"echo '{FONT_SHA256}  {ASSETS}/FrankRuhlLibre-Regular.ttf' | sha256sum -c -",
     )
     .add_local_python_source("maatik_engine")
 )
@@ -120,6 +137,50 @@ def recognize(slug: str, page: int, model: str = DEFAULT_MODEL) -> dict:
 
 
 @app.function(
+    volumes={DATA: volume}, cpu=WORKER_CPU, memory=WORKER_MEMORY_MIB, timeout=3600
+)
+def feasibility_c(model: str, n_lines: int = 60, epochs: int = 2) -> dict:
+    """Short ketos fine-tune from a base model on rendered CC0 lines."""
+    import tempfile
+    import zipfile
+
+    from maatik_engine.synth import render_lines
+    from maatik_engine.train import finetune
+
+    if model not in BASE_MODELS:
+        raise ValueError(f"unknown model {model}")
+    t0 = time.monotonic()
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    out = DATA / "feasibility" / "c" / f"{stamp}-{model}"
+    record = {"kind": "feasibility-c", "model": model, "lines": n_lines, "epochs": epochs,
+              "started_at": datetime.now(timezone.utc).isoformat(),
+              "worker": {"cpu": WORKER_CPU, "memory_mib": WORKER_MEMORY_MIB}}
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            text = zipfile.ZipFile(ASSETS / "tsel.zip").read("plain.txt").decode("utf-8")
+            lines = [l for l in text.splitlines() if len(l.split()) >= 3][:n_lines]
+            imgs = render_lines(lines, Path(tmp) / "lines", ASSETS / "FrankRuhlLibre-Regular.ttf")
+            result = finetune(MODELS / model / BASE_MODELS[model]["filename"], imgs, out,
+                              epochs=epochs, threads=int(WORKER_CPU))
+        for ckpt in out.glob("*.ckpt"):
+            ckpt.unlink()  # keep only the exported weights on the volume
+        record.update(status="ok" if result["exit_code"] == 0 and result["weights"] else "failed",
+                      result=result, output=str(out))
+    except Exception as e:  # noqa: BLE001
+        record.update(status="failed", error=str(e)[:2000])
+        raise
+    finally:
+        seconds = round(time.monotonic() - t0, 2)
+        record.update(seconds=seconds, estimated_usd=_estimate_usd(seconds))
+        runs = DATA / "feasibility" / "runs.jsonl"
+        runs.parent.mkdir(parents=True, exist_ok=True)
+        with runs.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        volume.commit()
+    return record
+
+
+@app.function(
     volumes={DATA: volume},
     secrets=[modal.Secret.from_name(API_SECRET_NAME, required_keys=["MAATIK_API_TOKEN"])],
     cpu=0.25,
@@ -175,6 +236,13 @@ def api():
         if model not in BASE_MODELS:
             raise HTTPException(status_code=400, detail="unknown model")
         call = recognize.spawn(slug, page, model)
+        return {"job_id": call.object_id}
+
+    @web.post("/v1/feasibility/c")
+    def start_feasibility_c(model: str = DEFAULT_MODEL, lines: int = 60, epochs: int = 2):
+        if model not in BASE_MODELS or not (10 <= lines <= 500) or not (1 <= epochs <= 5):
+            raise HTTPException(status_code=400, detail="bad parameters")
+        call = feasibility_c.spawn(model, lines, epochs)
         return {"job_id": call.object_id}
 
     @web.get("/v1/jobs/{job_id}")
