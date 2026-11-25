@@ -6,7 +6,7 @@ API below, with `Authorization: Bearer <token>` (see maatik_engine/auth.py).
 
 Storage: one Modal Volume, mounted at /data:
     /data/manuscripts/<slug>/pages/<nnnn>.jpg        original scan, never changed
-    /data/manuscripts/<slug>/pages/<nnnn>.alto.xml   engine output (feasibility stage)
+    /data/manuscripts/<slug>/pages/<nnnn>.<model>.alto.xml   engine output (feasibility stage)
     /data/manuscripts/<slug>/runs.jsonl              every run: kind, duration, estimated cost
 """
 
@@ -18,13 +18,13 @@ from pathlib import Path
 
 import modal
 
-from maatik_engine import PPOCRV6_SMALL
+from maatik_engine import BASE_MODELS, DEFAULT_MODEL
 
 APP_NAME = "maatik-engine"
 VOLUME_NAME = "maatik-data"
 API_SECRET_NAME = "maatik-engine-api"
 DATA = Path("/data")
-MODEL_DIR = Path("/models/ppocrv6-small")
+MODELS = Path("/models")
 
 # Recognition worker size. Prices from modal.com/pricing, read 25.11.2026:
 # CPU $0.0000131 per physical core per second, memory $0.00000222 per GiB per second.
@@ -42,11 +42,17 @@ image = (
     )
     .uv_pip_install("kraken==7.2", "fastapi==0.165.0", "huggingface_hub==1.16.1")
     .run_commands(
-        # Python API, not the `hf` CLI: the CLI crashes on exit with kraken's pinned click.
-        "python -c \"from huggingface_hub import hf_hub_download; "
-        f"hf_hub_download(repo_id='{PPOCRV6_SMALL['repo']}', filename='{PPOCRV6_SMALL['filename']}', "
-        f"revision='{PPOCRV6_SMALL['revision']}', local_dir='{MODEL_DIR}')\"",
-        f"echo '{PPOCRV6_SMALL['sha256']}  {MODEL_DIR / PPOCRV6_SMALL['filename']}' | sha256sum -c -",
+        *[
+            cmd
+            for key, m in BASE_MODELS.items()
+            for cmd in (
+                # Python API, not the `hf` CLI: the CLI crashes on exit with kraken's pinned click.
+                "python -c \"from huggingface_hub import hf_hub_download; "
+                f"hf_hub_download(repo_id='{m['repo']}', filename='{m['filename']}', "
+                f"revision='{m['revision']}', local_dir='{MODELS / key}')\"",
+                f"echo '{m['sha256']}  {MODELS / key / m['filename']}' | sha256sum -c -",
+            )
+        ]
     )
     .add_local_python_source("maatik_engine")
 )
@@ -77,9 +83,11 @@ def _log_run(slug: str, record: dict) -> None:
 @app.function(
     volumes={DATA: volume}, cpu=WORKER_CPU, memory=WORKER_MEMORY_MIB, timeout=1800
 )
-def recognize(slug: str, page: int) -> dict:
+def recognize(slug: str, page: int, model: str = DEFAULT_MODEL) -> dict:
     from maatik_engine.recognize import recognize_page
 
+    if model not in BASE_MODELS:
+        raise ValueError(f"unknown model {model}")
     t0 = time.monotonic()
     volume.reload()
     pages = _page_dir(slug)
@@ -90,12 +98,13 @@ def recognize(slug: str, page: int) -> dict:
         "kind": "recognize",
         "slug": slug,
         "page": page,
+        "model": model,
         "started_at": datetime.now(timezone.utc).isoformat(),
         "worker": {"cpu": WORKER_CPU, "memory_mib": WORKER_MEMORY_MIB},
     }
     try:
         summary = recognize_page(
-            img, pages / f"{page:04d}.alto.xml", MODEL_DIR / PPOCRV6_SMALL["filename"],
+            img, pages / f"{page:04d}.{model}.alto.xml", MODELS / model / BASE_MODELS[model]["filename"],
             threads=int(WORKER_CPU), device="cpu",
         )
         record.update(status="ok", summary=summary)
@@ -161,9 +170,11 @@ def api():
         return {"stored": f"{slug}/{page:04d}.jpg", "bytes": len(body)}
 
     @web.post("/v1/manuscripts/{slug}/pages/{page}/recognize")
-    def start_recognize(slug: str, page: int):
+    def start_recognize(slug: str, page: int, model: str = DEFAULT_MODEL):
         check(slug, page)
-        call = recognize.spawn(slug, page)
+        if model not in BASE_MODELS:
+            raise HTTPException(status_code=400, detail="unknown model")
+        call = recognize.spawn(slug, page, model)
         return {"job_id": call.object_id}
 
     @web.get("/v1/jobs/{job_id}")
@@ -179,10 +190,12 @@ def api():
             return {"status": "failed", "error": str(e)[:2000]}
 
     @web.get("/v1/manuscripts/{slug}/pages/{page}/alto")
-    def get_alto(slug: str, page: int):
+    def get_alto(slug: str, page: int, model: str = DEFAULT_MODEL):
         check(slug, page)
+        if model not in BASE_MODELS:
+            raise HTTPException(status_code=400, detail="unknown model")
         volume.reload()
-        path = _page_dir(slug) / f"{page:04d}.alto.xml"
+        path = _page_dir(slug) / f"{page:04d}.{model}.alto.xml"
         if not path.exists():
             raise HTTPException(status_code=404, detail="no result yet")
         return FileResponse(path, media_type="application/xml")
