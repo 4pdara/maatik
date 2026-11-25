@@ -38,9 +38,9 @@ jobs:
         run: |
           TOKEN=$(python -c "import os; from maatik_engine.auth import derive_api_token as d; print(d(os.environ['MODAL_TOKEN_SECRET']))")
           echo "::add-mask::$TOKEN"
-          printf 'MAATIK_API_TOKEN=%s\n' "$TOKEN" > "$RUNNER_TEMP/api.env"
-          modal secret create maatik-engine-api --from-dotenv "$RUNNER_TEMP/api.env" --force > /dev/null
-          rm -f "$RUNNER_TEMP/api.env"
+          TOKEN="$TOKEN" python -c "import json, os; json.dump({'MAATIK_API_TOKEN': os.environ['TOKEN']}, open(os.environ['RUNNER_TEMP'] + '/api.json', 'w'))"
+          modal secret create maatik-engine-api --from-json "$RUNNER_TEMP/api.json" --force > /dev/null
+          rm -f "$RUNNER_TEMP/api.json"
           echo "secret maatik-engine-api updated"
       - name: Deploy
         working-directory: engine
