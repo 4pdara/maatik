@@ -1,0 +1,61 @@
+name: deploy-engine
+
+# Deploys engine/modal_app.py to Modal. Needs the repository secrets
+# MODAL_TOKEN_ID and MODAL_TOKEN_SECRET. Writes the API token (derived from
+# MODAL_TOKEN_SECRET, see engine/maatik_engine/auth.py) into the Modal secret
+# maatik-engine-api, and publishes the API URL as a commit status.
+
+on:
+  push:
+    paths:
+      - "engine/**"
+      - ".github/workflows/deploy-engine.yml"
+
+permissions:
+  contents: read
+  statuses: write
+
+concurrency:
+  group: deploy-engine
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install Modal client
+        run: pip install modal==1.6.4
+      - name: Write API token to Modal secret
+        working-directory: engine
+        run: |
+          TOKEN=$(python -c "import os; from maatik_engine.auth import derive_api_token as d; print(d(os.environ['MODAL_TOKEN_SECRET']))")
+          echo "::add-mask::$TOKEN"
+          printf 'MAATIK_API_TOKEN=%s\n' "$TOKEN" > "$RUNNER_TEMP/api.env"
+          modal secret create maatik-engine-api --from-dotenv "$RUNNER_TEMP/api.env" --force > /dev/null
+          rm -f "$RUNNER_TEMP/api.env"
+          echo "secret maatik-engine-api updated"
+      - name: Deploy
+        working-directory: engine
+        run: |
+          modal deploy modal_app.py 2>&1 | tee "$RUNNER_TEMP/deploy.log"
+          test "${PIPESTATUS[0]}" -eq 0
+      - name: Publish API URL as commit status
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          URL=$(grep -o 'https://[a-z0-9-]*--maatik-engine-api\.modal\.run' "$RUNNER_TEMP/deploy.log" | head -1)
+          test -n "$URL"
+          curl -sS -f -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+            -d "{\"state\":\"success\",\"context\":\"engine-api-url\",\"target_url\":\"$URL\",\"description\":\"maatik engine API deployed\"}" > /dev/null
+          echo "API: $URL"
