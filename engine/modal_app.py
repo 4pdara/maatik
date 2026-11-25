@@ -42,8 +42,10 @@ image = (
     )
     .uv_pip_install("kraken==7.2", "fastapi==0.165.0", "huggingface_hub==1.16.1")
     .run_commands(
-        f"hf download {PPOCRV6_SMALL['repo']} {PPOCRV6_SMALL['filename']}"
-        f" --revision {PPOCRV6_SMALL['revision']} --local-dir {MODEL_DIR}",
+        # Python API, not the `hf` CLI: the CLI crashes on exit with kraken's pinned click.
+        "python -c \"from huggingface_hub import hf_hub_download; "
+        f"hf_hub_download(repo_id='{PPOCRV6_SMALL['repo']}', filename='{PPOCRV6_SMALL['filename']}', "
+        f"revision='{PPOCRV6_SMALL['revision']}', local_dir='{MODEL_DIR}')\"",
         f"echo '{PPOCRV6_SMALL['sha256']}  {MODEL_DIR / PPOCRV6_SMALL['filename']}' | sha256sum -c -",
     )
     .add_local_python_source("maatik_engine")
