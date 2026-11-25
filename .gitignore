@@ -1,0 +1,11 @@
+# Scans, manuscripts and transcriptions never enter git (CLAUDE.md rule 1).
+data/
+
+# Secrets
+.env
+.env.*
+
+# Model files
+*.mlmodel
+*.safetensors
+*.gguf
