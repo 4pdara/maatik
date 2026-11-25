@@ -71,8 +71,16 @@ def main() -> None:
         job = resp.json()["job_id"]
         print(f"job {job}", file=sys.stderr)
         while True:
-            resp = s.get(f"{base}/v1/jobs/{job}", timeout=120)
-            resp.raise_for_status()
+            try:
+                resp = s.get(f"{base}/v1/jobs/{job}", timeout=120)
+                resp.raise_for_status()
+            except requests.RequestException as e:
+                # The job keeps running on Modal; a dropped connection only affects polling.
+                print(f"poll error ({type(e).__name__}), retrying", file=sys.stderr)
+                if time.monotonic() - t0 > a.wait:
+                    raise
+                time.sleep(15)
+                continue
             if resp.json()["status"] != "running" or time.monotonic() - t0 > a.wait:
                 break
             time.sleep(5)
