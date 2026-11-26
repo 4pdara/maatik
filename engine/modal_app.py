@@ -43,7 +43,7 @@ FONT_SHA256 = "89478e290c257456eb61d846bea77ab06d944f09c7f84000c4fd8cdedde6845a"
 WORKER_CPU = 2.0
 WORKER_MEMORY_MIB = 4096
 # Calibration (training) worker.
-TRAIN_CPU = 4.0
+TRAIN_CPU = 8.0
 TRAIN_MEMORY_MIB = 8192
 USD_PER_CORE_SEC = 0.0000131
 USD_PER_GIB_SEC = 0.00000222
@@ -238,7 +238,7 @@ def feasibility_c(model: str, n_lines: int = 60, epochs: int = 2) -> dict:
 
 
 @app.function(volumes={DATA: volume}, cpu=TRAIN_CPU, memory=TRAIN_MEMORY_MIB, timeout=3 * 3600)
-def calibrate_manuscript(slug: str, epochs: int = 8, n_test: int = 3) -> dict:
+def calibrate_manuscript(slug: str, epochs: int = 6, n_test: int = 3) -> dict:
     """"Improve the model": train a new version from this manuscript's approved lines."""
     from maatik_engine.calibrate import calibrate
 
@@ -249,7 +249,7 @@ def calibrate_manuscript(slug: str, epochs: int = 8, n_test: int = 3) -> dict:
     _start_run(slug, record)
     try:
         metrics = calibrate(_ms_dir(slug), MODELS / DEFAULT_MODEL / BASE_MODELS[DEFAULT_MODEL]["filename"],
-                            n_test=n_test, epochs=epochs, threads=int(TRAIN_CPU))
+                            n_test=n_test, epochs=epochs, threads=int(TRAIN_CPU) - 2, workers=2)
         record.update(status="ok", metrics=metrics)
     except Exception as e:  # noqa: BLE001
         record.update(status="failed", error=str(e)[:2000])
@@ -421,7 +421,7 @@ def api():
         return FileResponse(path, media_type="image/jpeg")
 
     @web.post("/v1/manuscripts/{slug}/calibrate")
-    def start_calibrate(slug: str, epochs: int = 8):
+    def start_calibrate(slug: str, epochs: int = 6):
         check(slug, 1)
         if not (1 <= epochs <= 60):
             raise HTTPException(status_code=400, detail="epochs 1..60")

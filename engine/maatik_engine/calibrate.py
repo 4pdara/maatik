@@ -92,12 +92,13 @@ def calibrate(
     base_model: Path,
     *,
     n_test: int = 3,
-    epochs: int = 8,
+    epochs: int = 6,
     min_epochs: int | None = None,
     lag: int = 3,
-    lrate: float = 0.00002,
-    augment: bool = True,
+    lrate: float = 0.0001,
+    augment: bool = False,
     threads: int = 2,
+    workers: int = 0,
 ) -> dict:
     t0 = time.monotonic()
     mpath = ms_dir / "manuscript.json"
@@ -142,7 +143,7 @@ def calibrate(
         fit_files = train_files[:-n_val] if n_val else train_files
         result = finetune(current_model, fit_files, out, fmt="alto", eval_files=val_files,
                           epochs=epochs, min_epochs=min_epochs, lag=lag, lrate=lrate,
-                          augment=augment, threads=threads)
+                          augment=augment, threads=threads, workers=workers)
         result["validation_pages"] = [int(p.stem) for p in (val_files or [])]
         new_model = best_weights(out)
         after = evaluate(new_model, test_files, tmp / "eval-after", threads) if new_model else None
@@ -160,7 +161,7 @@ def calibrate(
         "before": before,
         "after": after,
         "promoted": promoted,
-        "settings": {"lrate": lrate, "augment": augment, "max_epochs": epochs,
+        "settings": {"lrate": lrate, "augment": augment, "max_epochs": epochs, "frozen_batchnorm": True,
                      "min_epochs": min_epochs, "lag": lag},
         "training": result,
         "seconds": round(time.monotonic() - t0, 2),

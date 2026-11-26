@@ -5,7 +5,9 @@ Never overwrites: every run writes into its own new output directory.
 
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -23,6 +25,7 @@ def finetune(
     batch_size: int = 8,
     accumulate: int = 1,
     threads: int = 2,
+    workers: int = 0,
     device: str = "cpu",
     lrate: float | None = None,
     augment: bool = False,
@@ -35,17 +38,17 @@ def finetune(
     if out_dir.exists() and any(out_dir.iterdir()):
         raise FileExistsError(f"{out_dir} is not empty; a model is never overwritten")
     out_dir.mkdir(parents=True, exist_ok=True)
+    # ketos runs through a wrapper that keeps BatchNorm frozen (see ketos_frozen_bn.py).
     cmd = [
-        "ketos", "-d", device, "--threads", str(threads), "--workers", "0",
+        sys.executable, "-m", "maatik_engine.ketos_frozen_bn",
+        "-d", device, "--threads", str(threads), "--workers", str(workers),
         "train", "-f", fmt, "-i", str(base_model), "--resize", "union",
         "-u", "NFD", "--base-dir", "R", "-N", str(epochs), "-B", str(batch_size),
         "--accumulate-grad-batches", str(accumulate), "-o", str(out_dir),
     ]
-    # Open problem (STATUS.md): fine-tuned on little data with B=8, ppocrv6 learned to
-    # rely on in-batch padding and read single lines badly (synthetic handwriting-style
-    # test: CER 54% at B=1 vs 12% at B=32). B=1 training was worse (BatchNorm on one
-    # line; val accuracy 16%). Recipe still to be found; evaluation stays at B=1,
-    # which is how pages are recognised, and the promotion rule blocks bad versions.
+    # Earlier failures (models that read single lines badly, CER up to 97%) were the
+    # BatchNorm running statistics being re-estimated from the fine-tuning batches;
+    # ketos_frozen_bn keeps them fixed.
     if min_epochs is None:
         cmd += ["-q", "fixed"]
     else:
@@ -63,7 +66,10 @@ def finetune(
         cmd += ["-e", str(listing)]
     cmd += [str(p) for p in train_files]
     t0 = time.monotonic()
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    env = dict(os.environ)
+    pkg_root = str(Path(__file__).resolve().parents[1])
+    env["PYTHONPATH"] = pkg_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
     seconds = round(time.monotonic() - t0, 2)
     log = (proc.stdout + "\n" + proc.stderr)[-6000:]
     (out_dir / "ketos.log").write_text(log, encoding="utf-8")
