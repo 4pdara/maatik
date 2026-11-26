@@ -14,15 +14,19 @@ Usage: python -m maatik_engine.ketos_frozen_bn <ketos arguments...>
 import sys
 
 import torch.nn as nn
-
-_original_train = nn.modules.batchnorm._BatchNorm.train
-
-
-def _always_eval(self, mode: bool = True):
-    return _original_train(self, False)
+import torch.nn.functional as F
 
 
-nn.modules.batchnorm._BatchNorm.train = _always_eval
+def _frozen_forward(self, input):
+    # Normalise with the stored (base model) statistics and never update them,
+    # whatever train/eval mode kraken or Lightning puts the layer in. (Overriding
+    # train() alone was not enough: the statistics still changed.)
+    self._check_input_dim(input)
+    return F.batch_norm(input, self.running_mean, self.running_var, self.weight,
+                        self.bias, False, 0.0, self.eps)
+
+
+nn.modules.batchnorm._BatchNorm.forward = _frozen_forward
 
 
 def main() -> None:
