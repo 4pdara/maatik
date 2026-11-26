@@ -49,7 +49,7 @@ def main() -> None:
     f.add_argument("--epochs", type=int, default=2)
     f.add_argument("--wait", type=int, default=3600)
     c = sub.add_parser("calibrate")
-    c.add_argument("slug"); c.add_argument("--epochs", type=int, default=30)
+    c.add_argument("slug"); c.add_argument("--epochs", type=int, default=8)
     c.add_argument("--wait", type=int, default=3 * 3600)
     e = sub.add_parser("e2e")
     e.add_argument("--pages", type=int, default=8); e.add_argument("--n-test", type=int, default=2)

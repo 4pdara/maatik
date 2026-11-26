@@ -238,7 +238,7 @@ def feasibility_c(model: str, n_lines: int = 60, epochs: int = 2) -> dict:
 
 
 @app.function(volumes={DATA: volume}, cpu=TRAIN_CPU, memory=TRAIN_MEMORY_MIB, timeout=3 * 3600)
-def calibrate_manuscript(slug: str, epochs: int = 30, n_test: int = 3) -> dict:
+def calibrate_manuscript(slug: str, epochs: int = 8, n_test: int = 3) -> dict:
     """"Improve the model": train a new version from this manuscript's approved lines."""
     from maatik_engine.calibrate import calibrate
 
@@ -421,7 +421,7 @@ def api():
         return FileResponse(path, media_type="image/jpeg")
 
     @web.post("/v1/manuscripts/{slug}/calibrate")
-    def start_calibrate(slug: str, epochs: int = 30):
+    def start_calibrate(slug: str, epochs: int = 8):
         check(slug, 1)
         if not (1 <= epochs <= 60):
             raise HTTPException(status_code=400, detail="epochs 1..60")

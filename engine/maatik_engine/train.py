@@ -20,7 +20,8 @@ def finetune(
     epochs: int = 3,
     min_epochs: int | None = None,
     lag: int = 3,
-    batch_size: int = 8,
+    batch_size: int = 1,
+    accumulate: int = 8,
     threads: int = 2,
     device: str = "cpu",
     lrate: float | None = None,
@@ -38,8 +39,12 @@ def finetune(
         "ketos", "-d", device, "--threads", str(threads), "--workers", "0",
         "train", "-f", fmt, "-i", str(base_model), "--resize", "union",
         "-u", "NFD", "--base-dir", "R", "-N", str(epochs), "-B", str(batch_size),
-        "-o", str(out_dir),
+        "--accumulate-grad-batches", str(accumulate), "-o", str(out_dir),
     ]
+    # batch_size 1 on purpose: with B=8 ketos pads lines within a batch, and a model
+    # fine-tuned on little data learns to rely on that padding. Recognition runs one
+    # line at a time, so such a model fell apart (synthetic test: CER 54% at B=1 vs
+    # 12% at B=32). Gradient accumulation keeps the effective batch at `accumulate`.
     if min_epochs is None:
         cmd += ["-q", "fixed"]
     else:
