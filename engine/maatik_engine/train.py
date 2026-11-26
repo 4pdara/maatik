@@ -24,6 +24,7 @@ def finetune(
     threads: int = 2,
     device: str = "cpu",
     lrate: float | None = None,
+    augment: bool = False,
 ) -> dict:
     """fmt 'path': line images with .gt.txt; fmt 'alto': page ALTO files.
 
@@ -48,6 +49,8 @@ def finetune(
                 "--schedule", "constant"]
     if lrate is not None:
         cmd += ["-r", str(lrate)]
+    if augment:
+        cmd += ["--augment"]
     if eval_files:
         listing = out_dir / "eval_files.txt"
         listing.write_text("\n".join(str(p) for p in eval_files) + "\n", encoding="utf-8")

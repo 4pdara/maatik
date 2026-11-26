@@ -95,7 +95,8 @@ def calibrate(
     epochs: int = 30,
     min_epochs: int = 3,
     lag: int = 3,
-    lrate: float = 0.0001,
+    lrate: float = 0.00002,
+    augment: bool = True,
     threads: int = 2,
 ) -> dict:
     t0 = time.monotonic()
@@ -133,9 +134,16 @@ def calibrate(
             raise ValueError("no approved lines on test pages yet; approve test pages first")
 
         before = evaluate(current_model, test_files, tmp / "eval-before", threads)
-        # ketos validates on a slice of the training pages, never on test pages.
-        result = finetune(current_model, train_files, out, fmt="alto", epochs=epochs,
-                          min_epochs=min_epochs, lag=lag, lrate=lrate, threads=threads)
+        # Validation (which picks the best epoch) uses whole held-out training
+        # pages, never test pages: validating on lines from pages it also trains
+        # on hid overfitting in the first synthetic run (val 100%, test CER 30%).
+        n_val = max(1, len(train_files) // 5) if len(train_files) >= 2 else 0
+        val_files = train_files[-n_val:] if n_val else None
+        fit_files = train_files[:-n_val] if n_val else train_files
+        result = finetune(current_model, fit_files, out, fmt="alto", eval_files=val_files,
+                          epochs=epochs, min_epochs=min_epochs, lag=lag, lrate=lrate,
+                          augment=augment, threads=threads)
+        result["validation_pages"] = [int(p.stem) for p in (val_files or [])]
         new_model = best_weights(out)
         after = evaluate(new_model, test_files, tmp / "eval-after", threads) if new_model else None
 
@@ -152,6 +160,8 @@ def calibrate(
         "before": before,
         "after": after,
         "promoted": promoted,
+        "settings": {"lrate": lrate, "augment": augment, "max_epochs": epochs,
+                     "min_epochs": min_epochs, "lag": lag},
         "training": result,
         "seconds": round(time.monotonic() - t0, 2),
     }
