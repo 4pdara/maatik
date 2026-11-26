@@ -41,19 +41,20 @@ def _read_words(alto_xml: str) -> dict[str, list[dict]]:
 
 
 def build(ms_dir: Path, text_lines: list[str], font: Path, base_model: Path, *,
-          pages: int = 8, lines_per_page: int = 12, threads: int = 2) -> dict:
+          pages: int = 8, lines_per_page: int = 12, threads: int = 2, font_size: int = 40) -> dict:
     pdir = ms_dir / "pages"
     pdir.mkdir(parents=True, exist_ok=True)
     save_json(ms_dir / "manuscript.json", {
         "slug": ms_dir.name, "name": "Synthetic pages from Tsel HaOlam (CC0)",
-        "source": "HeOCR htext tsel-haolam-v1, Zenodo 24521432, rendered in Frank Ruhl Libre",
+        "source": f"HeOCR htext tsel-haolam-v1, Zenodo 24521432, rendered in {font.stem}",
         "synthetic": True, "split": None, "active_model": None,
     })
     report = {"pages": [], "approved_lines": 0}
     pool = [l for l in text_lines if len(l.split()) >= 3]
     for n in range(1, pages + 1):
         img = pdir / f"{n:04d}.jpg"
-        drawn = render_page(pool[(n - 1) * lines_per_page: n * lines_per_page], img, font, seed=n)
+        drawn = render_page(pool[(n - 1) * lines_per_page: n * lines_per_page], img, font, seed=n,
+                            size=font_size, leading=int(font_size * 1.9))
         from PIL import Image
         W, H = Image.open(img).size
         page = {
@@ -88,8 +89,10 @@ def build(ms_dir: Path, text_lines: list[str], font: Path, base_model: Path, *,
 
 
 def run(ms_dir: Path, text_lines: list[str], font: Path, base_model: Path, *,
-        pages: int = 8, n_test: int = 2, epochs: int = 10, threads: int = 2) -> dict:
-    report = build(ms_dir, text_lines, font, base_model, pages=pages, threads=threads)
+        pages: int = 8, n_test: int = 2, epochs: int = 10, threads: int = 2,
+        font_size: int = 40) -> dict:
+    report = build(ms_dir, text_lines, font, base_model, pages=pages, threads=threads,
+                   font_size=font_size)
     report["calibration"] = calibrate(ms_dir, base_model, n_test=n_test, epochs=epochs, threads=threads)
     (ms_dir / "e2e_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
     return report
