@@ -442,6 +442,25 @@ def api():
                 versions.append(met)
         return {"active_model": m.get("active_model"), "split": m.get("split"), "versions": versions}
 
+    @web.get("/v1/storage")
+    def storage():
+        """Read-only: bytes on the volume per top-level area and per manuscript, and leftovers."""
+        volume.reload()
+
+        def size(p: Path) -> int:
+            return sum(f.stat().st_size for f in p.rglob("*") if f.is_file()) if p.exists() else 0
+
+        areas = {d.name: size(d) for d in DATA.iterdir() if d.is_dir()} if DATA.exists() else {}
+        manuscripts = {}
+        for d in sorted((DATA / "manuscripts").iterdir()) if (DATA / "manuscripts").exists() else []:
+            if d.is_dir():
+                manuscripts[d.name] = {"total": size(d), "models": size(d / "models"),
+                                       "model_versions": len(list((d / "models").glob("v*")))}
+        ckpts = [{"path": str(f.relative_to(DATA)), "bytes": f.stat().st_size}
+                 for f in DATA.rglob("*.ckpt")] if DATA.exists() else []
+        return {"total": sum(areas.values()), "areas": areas, "manuscripts": manuscripts,
+                "leftover_checkpoints": ckpts}
+
     @web.post("/v1/e2e/synthetic")
     def start_e2e(pages: int = 8, n_test: int = 2, epochs: int = 10):
         if not (4 <= pages <= 20) or not (1 <= n_test < pages) or not (1 <= epochs <= 30):
