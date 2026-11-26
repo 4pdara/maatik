@@ -5,8 +5,11 @@ reach Modal's gRPC API). After deployment everything goes through the HTTPS
 API below, with `Authorization: Bearer <token>` (see maatik_engine/auth.py).
 
 Storage: one Modal Volume, mounted at /data:
+    /data/manuscripts/<slug>/manuscript.json         name, source, split, active_model
     /data/manuscripts/<slug>/pages/<nnnn>.jpg        original scan, never changed
-    /data/manuscripts/<slug>/pages/<nnnn>.<model>.alto.xml   engine output (feasibility stage)
+    /data/manuscripts/<slug>/pages/<nnnn>.json       page JSON, the source of truth
+    /data/manuscripts/<slug>/pages/<nnnn>.<model>.alto.xml   raw engine output
+    /data/manuscripts/<slug>/models/v<k>/            calibrated model versions + metrics.json
     /data/manuscripts/<slug>/runs.jsonl              every run: kind, duration, estimated cost
 """
 
@@ -39,6 +42,9 @@ FONT_SHA256 = "89478e290c257456eb61d846bea77ab06d944f09c7f84000c4fd8cdedde6845a"
 # CPU $0.0000131 per physical core per second, memory $0.00000222 per GiB per second.
 WORKER_CPU = 2.0
 WORKER_MEMORY_MIB = 4096
+# Calibration (training) worker.
+TRAIN_CPU = 4.0
+TRAIN_MEMORY_MIB = 8192
 USD_PER_CORE_SEC = 0.0000131
 USD_PER_GIB_SEC = 0.00000222
 
@@ -85,45 +91,96 @@ def _page_dir(slug: str) -> Path:
     return DATA / "manuscripts" / slug / "pages"
 
 
-def _estimate_usd(seconds: float) -> float:
-    per_sec = WORKER_CPU * USD_PER_CORE_SEC + (WORKER_MEMORY_MIB / 1024) * USD_PER_GIB_SEC
+def _estimate_usd(seconds: float, cpu: float = WORKER_CPU, memory_mib: int = WORKER_MEMORY_MIB) -> float:
+    per_sec = cpu * USD_PER_CORE_SEC + (memory_mib / 1024) * USD_PER_GIB_SEC
     return round(seconds * per_sec, 6)
 
 
-def _log_run(slug: str, record: dict) -> None:
-    runs = DATA / "manuscripts" / slug / "runs.jsonl"
+def _log_run(slug: str, record: dict, *, path: Path | None = None) -> None:
+    runs = path or DATA / "manuscripts" / slug / "runs.jsonl"
     runs.parent.mkdir(parents=True, exist_ok=True)
     with runs.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def _start_run(slug: str, record: dict, *, path: Path | None = None) -> None:
+    """Log the start right away, so a run killed by a timeout still leaves a trace."""
+    import uuid
+
+    record.setdefault("run_id", uuid.uuid4().hex[:12])
+    _log_run(slug, dict(record, status="started"), path=path)
+    volume.commit()
+
+
+def _ms_dir(slug: str) -> Path:
+    return DATA / "manuscripts" / slug
+
+
+def _read_json(p: Path, default=None):
+    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else default
+
+
+def _write_json(p: Path, data) -> None:
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(p)
+
+
+def _page_is_untouched(page: dict | None) -> bool:
+    return page is None or all(l["status"] == "pending" and l["source"] == "engine" for l in page["lines"])
+
+
 @app.function(
     volumes={DATA: volume}, cpu=WORKER_CPU, memory=WORKER_MEMORY_MIB, timeout=1800
 )
-def recognize(slug: str, page: int, model: str = DEFAULT_MODEL) -> dict:
+def recognize(slug: str, page: int, model: str = "active") -> dict:
+    """Recognise one page. model: a base model key, or "active" (the manuscript's
+    calibrated model if there is one, else the default base model). Writes the
+    page JSON unless someone has already worked on that page."""
+    from maatik_engine import pagejson as pj
+    from maatik_engine.calibrate import active_model_path
     from maatik_engine.recognize import recognize_page
 
-    if model not in BASE_MODELS:
-        raise ValueError(f"unknown model {model}")
     t0 = time.monotonic()
     volume.reload()
     pages = _page_dir(slug)
     img = pages / f"{page:04d}.jpg"
     if not img.exists():
         raise FileNotFoundError(f"{slug}/{page:04d}.jpg not found")
+    if model == "active":
+        manuscript = _read_json(_ms_dir(slug) / "manuscript.json", {})
+        weights, name = active_model_path(_ms_dir(slug), manuscript,
+                                          MODELS / DEFAULT_MODEL / BASE_MODELS[DEFAULT_MODEL]["filename"])
+        model_version = name if name != "base" else f"base:{DEFAULT_MODEL}"
+        alto_name = f"{page:04d}.active.alto.xml"
+    elif model in BASE_MODELS:
+        weights, model_version = MODELS / model / BASE_MODELS[model]["filename"], f"base:{model}"
+        alto_name = f"{page:04d}.{model}.alto.xml"
+    else:
+        raise ValueError(f"unknown model {model}")
     record = {
         "kind": "recognize",
         "slug": slug,
         "page": page,
-        "model": model,
+        "model": model_version,
         "started_at": datetime.now(timezone.utc).isoformat(),
         "worker": {"cpu": WORKER_CPU, "memory_mib": WORKER_MEMORY_MIB},
     }
+    _start_run(slug, record)
     try:
-        summary = recognize_page(
-            img, pages / f"{page:04d}.{model}.alto.xml", MODELS / model / BASE_MODELS[model]["filename"],
-            threads=int(WORKER_CPU), device="cpu",
-        )
+        summary = recognize_page(img, pages / alto_name, weights, threads=int(WORKER_CPU), device="cpu")
+        page_json = pages / f"{page:04d}.json"
+        if model == "active" or not page_json.exists():
+            current = _read_json(page_json)
+            if _page_is_untouched(current):
+                new = pj.from_kraken_alto((pages / alto_name).read_text(encoding="utf-8"),
+                                          img.name, model_version)
+                if current:
+                    new["revision"] = current["revision"] + 1
+                _write_json(page_json, new)
+                summary["page_json"] = "written"
+            else:
+                summary["page_json"] = "kept (page already proofread)"
         record.update(status="ok", summary=summary)
     except Exception as e:  # noqa: BLE001 - record the failure, then re-raise
         record.update(status="failed", error=str(e)[:2000])
@@ -180,6 +237,61 @@ def feasibility_c(model: str, n_lines: int = 60, epochs: int = 2) -> dict:
     return record
 
 
+@app.function(volumes={DATA: volume}, cpu=TRAIN_CPU, memory=TRAIN_MEMORY_MIB, timeout=3 * 3600)
+def calibrate_manuscript(slug: str, epochs: int = 30, n_test: int = 3) -> dict:
+    """"Improve the model": train a new version from this manuscript's approved lines."""
+    from maatik_engine.calibrate import calibrate
+
+    t0 = time.monotonic()
+    volume.reload()
+    record = {"kind": "calibrate", "slug": slug, "started_at": datetime.now(timezone.utc).isoformat(),
+              "worker": {"cpu": TRAIN_CPU, "memory_mib": TRAIN_MEMORY_MIB}, "max_epochs": epochs}
+    _start_run(slug, record)
+    try:
+        metrics = calibrate(_ms_dir(slug), MODELS / DEFAULT_MODEL / BASE_MODELS[DEFAULT_MODEL]["filename"],
+                            n_test=n_test, epochs=epochs, threads=int(TRAIN_CPU))
+        record.update(status="ok", metrics=metrics)
+    except Exception as e:  # noqa: BLE001
+        record.update(status="failed", error=str(e)[:2000])
+        raise
+    finally:
+        seconds = round(time.monotonic() - t0, 2)
+        record.update(seconds=seconds, estimated_usd=_estimate_usd(seconds, TRAIN_CPU, TRAIN_MEMORY_MIB))
+        _log_run(slug, record)
+        volume.commit()
+    return record
+
+
+@app.function(volumes={DATA: volume}, cpu=TRAIN_CPU, memory=TRAIN_MEMORY_MIB, timeout=3 * 3600)
+def e2e_synthetic(pages: int = 8, n_test: int = 2, epochs: int = 10) -> dict:
+    """Whole pipeline on a synthetic manuscript with known truth (see maatik_engine/e2e.py)."""
+    import zipfile
+
+    from maatik_engine.e2e import run
+
+    t0 = time.monotonic()
+    slug = "synthetic-tsel-" + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    record = {"kind": "e2e-synthetic", "slug": slug, "pages": pages, "started_at": datetime.now(timezone.utc).isoformat(),
+              "worker": {"cpu": TRAIN_CPU, "memory_mib": TRAIN_MEMORY_MIB}}
+    _start_run(slug, record)
+    try:
+        text = zipfile.ZipFile(ASSETS / "tsel.zip").read("plain.txt").decode("utf-8").splitlines()
+        report = run(_ms_dir(slug), text, ASSETS / "FrankRuhlLibre-Regular.ttf",
+                     MODELS / DEFAULT_MODEL / BASE_MODELS[DEFAULT_MODEL]["filename"],
+                     pages=pages, n_test=n_test, epochs=epochs, threads=int(TRAIN_CPU))
+        report["calibration"]["training"].pop("log_tail", None)
+        record.update(status="ok", calibration=report["calibration"])
+    except Exception as e:  # noqa: BLE001
+        record.update(status="failed", error=str(e)[:2000])
+        raise
+    finally:
+        seconds = round(time.monotonic() - t0, 2)
+        record.update(seconds=seconds, estimated_usd=_estimate_usd(seconds, TRAIN_CPU, TRAIN_MEMORY_MIB))
+        _log_run(slug, record)
+        volume.commit()
+    return record
+
+
 @app.function(
     volumes={DATA: volume},
     secrets=[modal.Secret.from_name(API_SECRET_NAME, required_keys=["MAATIK_API_TOKEN"])],
@@ -231,11 +343,110 @@ def api():
         return {"stored": f"{slug}/{page:04d}.jpg", "bytes": len(body)}
 
     @web.post("/v1/manuscripts/{slug}/pages/{page}/recognize")
-    def start_recognize(slug: str, page: int, model: str = DEFAULT_MODEL):
+    def start_recognize(slug: str, page: int, model: str = "active"):
         check(slug, page)
-        if model not in BASE_MODELS:
+        if model != "active" and model not in BASE_MODELS:
             raise HTTPException(status_code=400, detail="unknown model")
         call = recognize.spawn(slug, page, model)
+        return {"job_id": call.object_id}
+
+    @web.get("/v1/manuscripts")
+    def list_manuscripts():
+        volume.reload()
+        root = DATA / "manuscripts"
+        out = []
+        for d in sorted(root.iterdir()) if root.exists() else []:
+            if d.is_dir() and SLUG_RE.match(d.name):
+                m = _read_json(d / "manuscript.json", {})
+                out.append({"slug": d.name, "name": m.get("name"), "active_model": m.get("active_model"),
+                            "pages": len(list((d / "pages").glob("[0-9][0-9][0-9][0-9].jpg")))})
+        return out
+
+    @web.get("/v1/manuscripts/{slug}/pages")
+    def list_pages(slug: str):
+        check(slug, 1)
+        volume.reload()
+        out = []
+        for img in sorted(_page_dir(slug).glob("[0-9][0-9][0-9][0-9].jpg")):
+            pg = _read_json(img.with_suffix(".json"))
+            lines = pg["lines"] if pg else []
+            out.append({"page": int(img.stem), "recognized": pg is not None, "lines": len(lines),
+                        "approved": sum(l["status"] == "approved" for l in lines),
+                        "revision": pg["revision"] if pg else None})
+        return out
+
+    @web.get("/v1/manuscripts/{slug}/pages/{page}")
+    def get_page(slug: str, page: int):
+        check(slug, page)
+        volume.reload()
+        pg = _read_json(_page_dir(slug) / f"{page:04d}.json")
+        if pg is None:
+            raise HTTPException(status_code=404, detail="page not recognised yet")
+        return pg
+
+    @web.put("/v1/manuscripts/{slug}/pages/{page}")
+    async def put_page(slug: str, page: int, request: Request):
+        """Save a page. The body's revision must equal the stored one (no lost updates)."""
+        check(slug, page)
+        body = await request.json()
+        path = _page_dir(slug) / f"{page:04d}.json"
+        volume.reload()
+        current = _read_json(path)
+        if current is None:
+            raise HTTPException(status_code=404, detail="page not recognised yet")
+        if body.get("revision") != current["revision"]:
+            raise HTTPException(status_code=409, detail={"message": "page changed since you loaded it",
+                                                         "revision": current["revision"]})
+        if body.get("schema_version") != 1 or not isinstance(body.get("lines"), list):
+            raise HTTPException(status_code=422, detail="not a schema 1 page")
+        old = {l["id"]: l for l in current["lines"]}
+        for l in body["lines"]:
+            if l.get("region") not in ("main", "margin", "interlinear") or l.get("status") not in ("pending", "approved"):
+                raise HTTPException(status_code=422, detail=f"bad region or status on line {l.get('id')}")
+            if l.get("id") in old:  # what the engine read is never changed by a save
+                l["engine_text"] = old[l["id"]]["engine_text"]
+        body["revision"] = current["revision"] + 1
+        body["image"] = current["image"]
+        _write_json(path, body)
+        volume.commit()
+        return {"revision": body["revision"]}
+
+    @web.get("/v1/manuscripts/{slug}/pages/{page}/image")
+    def get_image(slug: str, page: int):
+        check(slug, page)
+        volume.reload()
+        path = _page_dir(slug) / f"{page:04d}.jpg"
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="no such page")
+        return FileResponse(path, media_type="image/jpeg")
+
+    @web.post("/v1/manuscripts/{slug}/calibrate")
+    def start_calibrate(slug: str, epochs: int = 30):
+        check(slug, 1)
+        if not (1 <= epochs <= 60):
+            raise HTTPException(status_code=400, detail="epochs 1..60")
+        call = calibrate_manuscript.spawn(slug, epochs)
+        return {"job_id": call.object_id}
+
+    @web.get("/v1/manuscripts/{slug}/models")
+    def list_models(slug: str):
+        check(slug, 1)
+        volume.reload()
+        d = _ms_dir(slug)
+        m = _read_json(d / "manuscript.json", {})
+        versions = []
+        for v in sorted((d / "models").glob("v*"), key=lambda p: int(p.name[1:]) if p.name[1:].isdigit() else 0):
+            met = _read_json(v / "metrics.json")
+            if met:
+                met.get("training", {}).pop("log_tail", None)
+                versions.append(met)
+        return {"active_model": m.get("active_model"), "split": m.get("split"), "versions": versions}
+
+    @web.post("/v1/e2e/synthetic")
+    def start_e2e(pages: int = 8, n_test: int = 2, epochs: int = 10):
+        if not (4 <= pages <= 20) or not (1 <= n_test < pages) or not (1 <= epochs <= 30):
+            raise HTTPException(status_code=400, detail="bad parameters")
+        call = e2e_synthetic.spawn(pages, n_test, epochs)
         return {"job_id": call.object_id}
 
     @web.post("/v1/feasibility/c")
@@ -260,7 +471,7 @@ def api():
     @web.get("/v1/manuscripts/{slug}/pages/{page}/alto")
     def get_alto(slug: str, page: int, model: str = DEFAULT_MODEL):
         check(slug, page)
-        if model not in BASE_MODELS:
+        if model != "active" and model not in BASE_MODELS:
             raise HTTPException(status_code=400, detail="unknown model")
         volume.reload()
         path = _page_dir(slug) / f"{page:04d}.{model}.alto.xml"
