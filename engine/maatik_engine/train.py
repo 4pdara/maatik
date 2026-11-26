@@ -20,8 +20,8 @@ def finetune(
     epochs: int = 3,
     min_epochs: int | None = None,
     lag: int = 3,
-    batch_size: int = 1,
-    accumulate: int = 8,
+    batch_size: int = 8,
+    accumulate: int = 1,
     threads: int = 2,
     device: str = "cpu",
     lrate: float | None = None,
@@ -41,10 +41,11 @@ def finetune(
         "-u", "NFD", "--base-dir", "R", "-N", str(epochs), "-B", str(batch_size),
         "--accumulate-grad-batches", str(accumulate), "-o", str(out_dir),
     ]
-    # batch_size 1 on purpose: with B=8 ketos pads lines within a batch, and a model
-    # fine-tuned on little data learns to rely on that padding. Recognition runs one
-    # line at a time, so such a model fell apart (synthetic test: CER 54% at B=1 vs
-    # 12% at B=32). Gradient accumulation keeps the effective batch at `accumulate`.
+    # Open problem (STATUS.md): fine-tuned on little data with B=8, ppocrv6 learned to
+    # rely on in-batch padding and read single lines badly (synthetic handwriting-style
+    # test: CER 54% at B=1 vs 12% at B=32). B=1 training was worse (BatchNorm on one
+    # line; val accuracy 16%). Recipe still to be found; evaluation stays at B=1,
+    # which is how pages are recognised, and the promotion rule blocks bad versions.
     if min_epochs is None:
         cmd += ["-q", "fixed"]
     else:
