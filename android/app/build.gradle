@@ -1,0 +1,43 @@
+plugins {
+    id "com.android.application"
+}
+
+android {
+    namespace "app.maatik.android"
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "app.maatik.android"
+        minSdk 29          // Android 10 and newer
+        targetSdk 35
+        versionCode Integer.parseInt(System.getenv("GITHUB_RUN_NUMBER") ?: "1")
+        versionName "0.1.0"
+    }
+
+    signingConfigs {
+        // A fixed key, when one is provided (repository secret ANDROID_KEYSTORE_B64 and friends),
+        // lets new versions install over old ones. Without it the build is signed with a
+        // throwaway debug key, and a new version needs the old one removed first.
+        release {
+            def ks = System.getenv("ANDROID_KEYSTORE_FILE")
+            if (ks) {
+                storeFile file(ks)
+                storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("ANDROID_KEY_ALIAS")
+                keyPassword System.getenv("ANDROID_KEY_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig System.getenv("ANDROID_KEYSTORE_FILE") ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>מעתיק</title>
+<style>
+  /* Colours from docs/DESIGN.md. Shown when the site cannot be reached. */
+  :root { --paper: #f4efe6; --ink: #221d16; --ink-muted: #6b6257; --accent: #1e3557; --accent-ink: #ffffff; color-scheme: light; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--paper); color: var(--ink); font-family: "David Libre", "David", serif; font-size: 18px; line-height: 28px;
+         display: grid; place-items: center; }
+  main { display: grid; gap: 16px; max-width: 420px; padding-inline: 16px; }
+  .brand { font-size: 26px; font-weight: 700; }
+  .muted { color: var(--ink-muted); font-size: 16px; }
+  button { font: inherit; min-height: 48px; padding-inline: 24px; border: 1px solid var(--accent); border-radius: 2px;
+           background: var(--accent); color: var(--accent-ink); font-weight: 700; justify-self: start; }
+</style>
+</head>
+<body>
+<main>
+  <span class="brand">מעתיק</span>
+  <p>אין חיבור לאתר. בדוק שהטלפון מחובר לאינטרנט ונסה שוב.</p>
+  <p class="muted">עמודים שכבר צילמת נשמרו בגלריה, בתיקייה Pictures/Maatik.</p>
+  <button type="button" onclick="location.href='https://pdara--maatik-web.us-east.modal.run/'">נסה שוב</button>
+</main>
+</body>
+</html>
