@@ -130,6 +130,41 @@ def _page_is_untouched(page: dict | None) -> bool:
     return page is None or all(l["status"] == "pending" and l["source"] == "engine" for l in page["lines"])
 
 
+def _untouched_pages(slug: str) -> list[int]:
+    """Pages with a scan whose page JSON is missing or has no human work in it."""
+    return [int(img.stem) for img in sorted(_page_dir(slug).glob("[0-9][0-9][0-9][0-9].jpg"))
+            if _page_is_untouched(_read_json(img.with_suffix(".json")))]
+
+
+def _approved_train_lines(slug: str) -> int:
+    """Approved lines on training pages: what the next calibration would learn from."""
+    m = _read_json(_ms_dir(slug) / "manuscript.json", {})
+    test = set((m.get("split") or {}).get("test", []))
+    n = 0
+    for f in _page_dir(slug).glob("[0-9][0-9][0-9][0-9].json"):
+        if int(f.stem) in test:
+            continue
+        pg = _read_json(f) or {"lines": []}
+        n += sum(l["status"] == "approved" and l["text"].strip() != "" for l in pg["lines"])
+    return n
+
+
+def _training_progress(slug: str) -> list[dict]:
+    """Epochs finished by a calibration that is still running, read from the
+    checkpoint files ketos writes (checkpoint_<epoch>-<validation accuracy>.ckpt)."""
+    models = _ms_dir(slug) / "models"
+    running = [v for v in models.glob("v*") if v.is_dir() and not (v / "metrics.json").exists()]
+    if not running:
+        return []
+    v = max(running, key=lambda p: int(p.name[1:]) if p.name[1:].isdigit() else 0)
+    out = []
+    for f in v.glob("checkpoint_*.ckpt"):
+        m = re.match(r"checkpoint_(\d+)-([0-9.]+)\.ckpt$", f.name)
+        if m:
+            out.append({"epoch": int(m.group(1)) + 1, "val_accuracy": float(m.group(2))})
+    return sorted(out, key=lambda e: e["epoch"])
+
+
 @app.function(
     volumes={DATA: volume}, cpu=WORKER_CPU, memory=WORKER_MEMORY_MIB, timeout=1800
 )
@@ -251,6 +286,13 @@ def calibrate_manuscript(slug: str, epochs: int = 6, n_test: int = 3) -> dict:
         metrics = calibrate(_ms_dir(slug), MODELS / DEFAULT_MODEL / BASE_MODELS[DEFAULT_MODEL]["filename"],
                             n_test=n_test, epochs=epochs, threads=int(TRAIN_CPU) - 2, workers=2)
         record.update(status="ok", metrics=metrics)
+        if metrics.get("promoted"):
+            # The new model is better: read again every page nobody has worked on yet.
+            volume.commit()
+            pages = _untouched_pages(slug)
+            for n in pages:
+                recognize.spawn(slug, n, "active")
+            record["rerecognize_pages"] = pages
     except Exception as e:  # noqa: BLE001
         record.update(status="failed", error=str(e)[:2000])
         raise
@@ -350,6 +392,127 @@ def api():
         call = recognize.spawn(slug, page, model)
         return {"job_id": call.object_id}
 
+    def check_slug(slug: str) -> None:
+        if not SLUG_RE.match(slug):
+            raise HTTPException(status_code=400, detail="bad slug")
+
+    def job_state(job_id: str) -> dict:
+        call = modal.FunctionCall.from_id(job_id)
+        try:
+            return {"status": "done", "result": call.get(timeout=0)}
+        except TimeoutError:
+            return {"status": "running"}
+        except Exception as e:  # noqa: BLE001
+            return {"status": "failed", "error": str(e)[:2000]}
+
+    @web.get("/v1/manuscripts/{slug}")
+    def get_manuscript(slug: str):
+        check_slug(slug)
+        volume.reload()
+        d = _ms_dir(slug)
+        if not d.exists():
+            raise HTTPException(status_code=404, detail="no such manuscript")
+        m = _read_json(d / "manuscript.json", {})
+        return {"slug": slug, "name": m.get("name"), "source": m.get("source"),
+                "active_model": m.get("active_model"), "split": m.get("split"),
+                "page_labels": m.get("page_labels", {})}
+
+    @web.put("/v1/manuscripts/{slug}/meta")
+    async def put_meta(slug: str, request: Request):
+        """Set the display name and page labels (e.g. folio numbers). Nothing else."""
+        check_slug(slug)
+        body = await request.json()
+        volume.reload()
+        path = _ms_dir(slug) / "manuscript.json"
+        if not _ms_dir(slug).exists():
+            raise HTTPException(status_code=404, detail="no such manuscript")
+        m = _read_json(path, {})
+        if "name" in body:
+            if not isinstance(body["name"], str) or not (1 <= len(body["name"]) <= 200):
+                raise HTTPException(status_code=422, detail="bad name")
+            m["name"] = body["name"]
+        if "page_labels" in body:
+            labels = body["page_labels"]
+            if not isinstance(labels, dict) or not all(
+                    str(k).isdigit() and isinstance(v, str) and len(v) <= 40 for k, v in labels.items()):
+                raise HTTPException(status_code=422, detail="bad page_labels")
+            m["page_labels"] = {str(int(k)): v for k, v in labels.items()}
+        _write_json(path, m)
+        volume.commit()
+        return {"name": m.get("name"), "page_labels": m.get("page_labels", {})}
+
+    @web.post("/v1/manuscripts/{slug}/recognize-all")
+    def recognize_all(slug: str):
+        """Recognise every page nobody has worked on yet, with the active model."""
+        check_slug(slug)
+        volume.reload()
+        pages = _untouched_pages(slug)
+        jobs = {str(n): recognize.spawn(slug, n, "active").object_id for n in pages}
+        return {"pages": pages, "jobs": jobs}
+
+    @web.get("/v1/manuscripts/{slug}/training")
+    def training(slug: str):
+        """State of "improve the model": the running or last job, its epochs so far,
+        and how many approved lines were added since the last trained version."""
+        check_slug(slug)
+        volume.reload()
+        d = _ms_dir(slug)
+        t = _read_json(d / "training.json")
+        versions = [_read_json(v / "metrics.json") for v in (d / "models").glob("v*")]
+        versions = [v for v in versions if v]
+        last = max(versions, key=lambda v: int(v["version"][1:]), default=None)
+        out = {"approved_train_lines": _approved_train_lines(slug),
+               "last_trained_lines": last["train_lines"] if last else 0,
+               "last_version": last["version"] if last else None,
+               "job": None}
+        if t:
+            state = job_state(t["job_id"])
+            if state["status"] == "done":
+                state["result"] = {k: state["result"].get(k) for k in ("status", "metrics", "seconds", "estimated_usd",
+                                                                       "rerecognize_pages")}
+                (state["result"].get("metrics") or {}).get("training", {}).pop("log_tail", None)
+            out["job"] = dict(t, **state)
+            if state["status"] == "running":
+                out["job"]["epochs_done"] = _training_progress(slug)
+        return out
+
+    @web.get("/v1/manuscripts/{slug}/export.txt")
+    def export_txt(slug: str, approved_only: bool = False):
+        """The whole manuscript as plain text, page by page, in reading order."""
+        from maatik_engine import pagejson as pj
+
+        check_slug(slug)
+        volume.reload()
+        m = _read_json(_ms_dir(slug) / "manuscript.json", {})
+        labels = m.get("page_labels", {})
+        parts = []
+        for f in sorted(_page_dir(slug).glob("[0-9][0-9][0-9][0-9].json")):
+            n = int(f.stem)
+            head = f"עמוד {n}" + (f" ({labels[str(n)]})" if str(n) in labels else "")
+            parts.append(head + "\n" + pj.page_text(_read_json(f), approved_only=approved_only))
+        return PlainTextResponse("\n\n".join(parts) + "\n")
+
+    @web.post("/v1/manuscripts/{slug}/pages/{page}/reading-order")
+    def fix_reading_order(slug: str, page: int):
+        """Put the page's lines in reading order (right column before left). Text and
+        approvals are untouched; only the order changes."""
+        from maatik_engine.layout import reading_order
+
+        check(slug, page)
+        volume.reload()
+        path = _page_dir(slug) / f"{page:04d}.json"
+        pg = _read_json(path)
+        if pg is None:
+            raise HTTPException(status_code=404, detail="page not recognised yet")
+        before = [l["id"] for l in sorted(pg["lines"], key=lambda l: l["order"])]
+        pg["lines"] = reading_order(sorted(pg["lines"], key=lambda l: l["order"]))
+        changed = before != [l["id"] for l in pg["lines"]]
+        if changed:
+            pg["revision"] += 1
+            _write_json(path, pg)
+            volume.commit()
+        return {"changed": changed, "revision": pg["revision"]}
+
     @web.get("/v1/manuscripts")
     def list_manuscripts():
         volume.reload()
@@ -366,11 +529,16 @@ def api():
     def list_pages(slug: str):
         check(slug, 1)
         volume.reload()
+        m = _read_json(_ms_dir(slug) / "manuscript.json", {})
+        labels = m.get("page_labels", {})
+        test = set((m.get("split") or {}).get("test", []))
         out = []
         for img in sorted(_page_dir(slug).glob("[0-9][0-9][0-9][0-9].jpg")):
             pg = _read_json(img.with_suffix(".json"))
             lines = pg["lines"] if pg else []
-            out.append({"page": int(img.stem), "recognized": pg is not None, "lines": len(lines),
+            n = int(img.stem)
+            out.append({"page": n, "label": labels.get(str(n)), "test": n in test,
+                        "recognized": pg is not None, "lines": len(lines),
                         "approved": sum(l["status"] == "approved" for l in lines),
                         "revision": pg["revision"] if pg else None})
         return out
@@ -399,14 +567,35 @@ def api():
                                                          "revision": current["revision"]})
         if body.get("schema_version") != 1 or not isinstance(body.get("lines"), list):
             raise HTTPException(status_code=422, detail="not a schema 1 page")
+        from maatik_engine import pagejson as pj
+
         old = {l["id"]: l for l in current["lines"]}
+        W, H = current["image"]["width"], current["image"]["height"]
+        lines, seen = [], set()
         for l in body["lines"]:
-            if l.get("region") not in ("main", "margin", "interlinear") or l.get("status") not in ("pending", "approved"):
-                raise HTTPException(status_code=422, detail=f"bad region or status on line {l.get('id')}")
-            if l.get("id") in old:  # what the engine read is never changed by a save
-                l["engine_text"] = old[l["id"]]["engine_text"]
-        body["revision"] = current["revision"] + 1
-        body["image"] = current["image"]
+            if not isinstance(l, dict):
+                raise HTTPException(status_code=422, detail="bad line")
+            if l.get("id") in old:
+                # Geometry and origin of an engine line come from the stored page, not the client.
+                o = old[l["id"]]
+                l = dict(l, source=o["source"], baseline=o["baseline"], boundary=o["boundary"])
+            problem = pj.check_line(l, W, H)
+            if problem or l["id"] in seen:
+                raise HTTPException(status_code=422, detail=f"{problem or 'duplicate id'} on line {l.get('id')}")
+            seen.add(l["id"])
+            if l["id"] in old:
+                # What the engine read (text, words, confidences, model) is never changed by a save.
+                o = old[l["id"]]
+                l = dict(l, text=pj._nfc(l["text"]), engine_text=o["engine_text"], words=o["words"],
+                         llm=o["llm"], source=o["source"], model_version=o["model_version"])
+                l = {k: l[k] for k in o}
+            else:
+                l = pj.manual_line(l)
+            lines.append(l)
+        lines.sort(key=lambda l: l["order"])
+        for i, l in enumerate(lines):
+            l["order"] = i
+        body = {"schema_version": 1, "revision": current["revision"] + 1, "image": current["image"], "lines": lines}
         _write_json(path, body)
         volume.commit()
         return {"revision": body["revision"]}
@@ -425,7 +614,16 @@ def api():
         check(slug, 1)
         if not (1 <= epochs <= 60):
             raise HTTPException(status_code=400, detail="epochs 1..60")
+        volume.reload()
+        tpath = _ms_dir(slug) / "training.json"
+        t = _read_json(tpath)
+        if t and job_state(t["job_id"])["status"] == "running":
+            raise HTTPException(status_code=409, detail={"message": "a training run is already going",
+                                                         "job_id": t["job_id"]})
         call = calibrate_manuscript.spawn(slug, epochs)
+        _write_json(tpath, {"job_id": call.object_id, "epochs": epochs,
+                            "started_at": datetime.now(timezone.utc).isoformat()})
+        volume.commit()
         return {"job_id": call.object_id}
 
     @web.get("/v1/manuscripts/{slug}/models")
@@ -492,13 +690,7 @@ def api():
     def job(job_id: str):
         if not re.match(r"^fc-[A-Za-z0-9]+$", job_id):
             raise HTTPException(status_code=400, detail="bad job id")
-        call = modal.FunctionCall.from_id(job_id)
-        try:
-            return {"status": "done", "result": call.get(timeout=0)}
-        except TimeoutError:
-            return {"status": "running"}
-        except Exception as e:  # noqa: BLE001
-            return {"status": "failed", "error": str(e)[:2000]}
+        return job_state(job_id)
 
     @web.get("/v1/manuscripts/{slug}/pages/{page}/alto")
     def get_alto(slug: str, page: int, model: str = DEFAULT_MODEL):

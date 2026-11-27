@@ -20,6 +20,8 @@ import uuid
 import xml.etree.ElementTree as ET
 from copy import deepcopy
 
+from .layout import reading_order
+
 SCHEMA_VERSION = 1
 ALTO_NS = "http://www.loc.gov/standards/alto/ns-v4#"
 REGIONS = ("main", "margin", "interlinear")
@@ -73,7 +75,7 @@ def from_kraken_alto(alto_xml: str | bytes, image_file: str, model_version: str)
                 "confidence": round(float(wc), 4) if wc is not None else None,
                 "box": box,
                 "alternatives": [],
-                "doubtful": False,
+                "doubtful": wc is not None and float(wc) < UNSURE_BELOW,
             })
         text = " ".join(w["text"] for w in words)
         lines.append({
@@ -90,6 +92,8 @@ def from_kraken_alto(alto_xml: str | bytes, image_file: str, model_version: str)
             "status": "pending",
             "model_version": model_version,
         })
+    # Kraken orders lines top to bottom, interleaving side-by-side columns.
+    lines = reading_order(lines)
     return {
         "schema_version": SCHEMA_VERSION,
         "revision": 1,
@@ -221,3 +225,52 @@ def training_page(page: dict) -> dict:
     p = deepcopy(page)
     p["lines"] = approved_lines(p)
     return p
+
+
+LINE_SOURCES = ("engine", "manual")
+_ID_CHARS = set("0123456789abcdef")
+
+
+def check_line(line: dict, width: int, height: int) -> str | None:
+    """Why a line from the editor is not acceptable, or None if it is."""
+    lid = line.get("id")
+    if not (isinstance(lid, str) and lid.startswith("l_") and len(lid) == 14 and set(lid[2:]) <= _ID_CHARS):
+        return "bad id"
+    if line.get("region") not in REGIONS:
+        return "bad region"
+    if line.get("status") not in ("pending", "approved"):
+        return "bad status"
+    if line.get("source") not in LINE_SOURCES:
+        return "bad source"
+    if not isinstance(line.get("text"), str) or len(line["text"]) > 2000:
+        return "bad text"
+    for key, least in (("baseline", 2), ("boundary", 3)):
+        pts = line.get(key)
+        if not isinstance(pts, list) or len(pts) < least or len(pts) > 2000:
+            return f"bad {key}"
+        for pt in pts:
+            if (not isinstance(pt, list) or len(pt) != 2 or not all(isinstance(v, int) for v in pt)
+                    or not (0 <= pt[0] <= width and 0 <= pt[1] <= height)):
+                return f"bad {key} point"
+    if not isinstance(line.get("words", []), list):
+        return "bad words"
+    return None
+
+
+def manual_line(line: dict) -> dict:
+    """Fill the fields a line drawn in the editor does not have."""
+    out = {
+        "id": line["id"], "order": int(line.get("order", 0)), "region": line["region"],
+        "baseline": line["baseline"], "boundary": line["boundary"], "text": _nfc(line["text"]),
+        "words": [], "engine_text": "", "llm": None, "source": "manual",
+        "status": line["status"], "model_version": None,
+    }
+    return out
+
+
+def page_text(page: dict, *, approved_only: bool = False) -> str:
+    """Plain text of a page in reading order, one line per line."""
+    lines = sorted(page["lines"], key=lambda l: l["order"])
+    if approved_only:
+        lines = [l for l in lines if l["status"] == "approved"]
+    return "\n".join(l["text"] for l in lines)
