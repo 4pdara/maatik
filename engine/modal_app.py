@@ -127,7 +127,8 @@ def _write_json(p: Path, data) -> None:
 
 
 def _page_is_untouched(page: dict | None) -> bool:
-    return page is None or all(l["status"] == "pending" and l["source"] == "engine" for l in page["lines"])
+    return page is None or (not page.get("removed_lines")
+                            and all(l["status"] == "pending" and l["source"] == "engine" for l in page["lines"]))
 
 
 def _untouched_pages(slug: str) -> list[int]:
@@ -570,22 +571,26 @@ def api():
         from maatik_engine import pagejson as pj
 
         old = {l["id"]: l for l in current["lines"]}
+        # Lines deleted in the editor are kept aside, so an undo restores them exactly
+        # (with what the engine read), instead of coming back as new manual lines.
+        removed = {l["id"]: l for l in current.get("removed_lines", [])}
+        known = {**removed, **old}
         W, H = current["image"]["width"], current["image"]["height"]
         lines, seen = [], set()
         for l in body["lines"]:
             if not isinstance(l, dict):
                 raise HTTPException(status_code=422, detail="bad line")
-            if l.get("id") in old:
-                # Geometry and origin of an engine line come from the stored page, not the client.
-                o = old[l["id"]]
+            if l.get("id") in known:
+                # Geometry and origin of a known line come from the stored page, not the client.
+                o = known[l["id"]]
                 l = dict(l, source=o["source"], baseline=o["baseline"], boundary=o["boundary"])
             problem = pj.check_line(l, W, H)
             if problem or l["id"] in seen:
                 raise HTTPException(status_code=422, detail=f"{problem or 'duplicate id'} on line {l.get('id')}")
             seen.add(l["id"])
-            if l["id"] in old:
+            if l["id"] in known:
                 # What the engine read (text, words, confidences, model) is never changed by a save.
-                o = old[l["id"]]
+                o = known[l["id"]]
                 l = dict(l, text=pj._nfc(l["text"]), engine_text=o["engine_text"], words=o["words"],
                          llm=o["llm"], source=o["source"], model_version=o["model_version"])
                 l = {k: l[k] for k in o}
@@ -595,7 +600,8 @@ def api():
         lines.sort(key=lambda l: l["order"])
         for i, l in enumerate(lines):
             l["order"] = i
-        body = {"schema_version": 1, "revision": current["revision"] + 1, "image": current["image"], "lines": lines}
+        body = {"schema_version": 1, "revision": current["revision"] + 1, "image": current["image"], "lines": lines,
+                "removed_lines": [l for i, l in known.items() if i not in seen][-500:]}
         _write_json(path, body)
         volume.commit()
         return {"revision": body["revision"]}
