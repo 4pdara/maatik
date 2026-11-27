@@ -48,6 +48,7 @@ def test_summary_counts_minutes_once_and_joins_trainings(tmp_path):
          "changes": {"approved": 5, "corrected": 2, "edited": 2, "added": 1, "deleted": 0, "unapproved": 0}},
         {"ts": "2026-11-27T10:03:00+00:00", "user": "uriel", "kind": "train_start", "slug": "ms"},
         {"ts": "2026-11-27T11:00:00+00:00", "user": "dina", "kind": "active", "slug": "ms"},
+        {"ts": "2026-11-27T11:01:00+00:00", "user": "dina", "kind": "upload", "slug": "ms", "page": 12},
     ]
     for i, e in enumerate(ev):
         activity.append(root, dict(e), writer=f"w{i % 2}")
@@ -61,6 +62,7 @@ def test_summary_counts_minutes_once_and_joins_trainings(tmp_path):
     assert s["uriel"]["pages"] == 1 and s["uriel"]["logins"] == 1 and s["uriel"]["trainings_started"] == 1
     assert s["uriel"]["trainings"][0]["version"] == "v3"
     assert s["dina"]["active_minutes"] == 1 and s["dina"]["lines_approved"] == 0
+    assert s["dina"]["pages_uploaded"] == 1 and s["uriel"]["pages_uploaded"] == 0
 
 
 def test_empty_stats_has_every_summary_field():

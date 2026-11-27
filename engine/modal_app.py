@@ -408,6 +408,7 @@ def api():
             raise HTTPException(status_code=409, detail="page exists; originals are never replaced")
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(body)
+        log(request, "upload", slug=slug, page=page)
         volume.commit()
         return {"stored": f"{slug}/{page:04d}.jpg", "bytes": len(body)}
 
@@ -694,6 +695,27 @@ def api():
             _write_json(path, pg)
             volume.commit()
         return {"changed": changed, "revision": pg["revision"]}
+
+    @web.post("/v1/manuscripts")
+    async def create_manuscript(request: Request):
+        """A new, empty manuscript. Its address (slug) is made up here; the name is free text."""
+        import secrets as _secrets
+
+        body = await request.json()
+        name = str(body.get("name", "")).strip()
+        if not (1 <= len(name) <= 200):
+            raise HTTPException(status_code=422, detail="שם כתב היד: 1 עד 200 תווים")
+        fresh(0)
+        slug = "ms-" + datetime.now(timezone.utc).strftime("%Y%m%d") + "-" + _secrets.token_hex(2)
+        while _ms_dir(slug).exists():
+            slug = "ms-" + datetime.now(timezone.utc).strftime("%Y%m%d") + "-" + _secrets.token_hex(2)
+        (_ms_dir(slug) / "pages").mkdir(parents=True)
+        _write_json(_ms_dir(slug) / "manuscript.json",
+                    {"name": name, "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                     "created_by": actor(request), "source": str(body.get("source", "")).strip()[:500] or None})
+        log(request, "create_manuscript", slug=slug)
+        volume.commit()
+        return {"slug": slug, "name": name}
 
     @web.get("/v1/manuscripts")
     def list_manuscripts():

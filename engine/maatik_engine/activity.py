@@ -8,6 +8,8 @@ containers never write the same file). Kinds:
     save          a page save, with what changed (see save_diff)
     train_start   "improve the model" started
     recognize_all recognition of all unproofread pages started
+    upload        a page scan uploaded (photographed in the app, or from a file)
+    create_manuscript  a new manuscript created
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-KINDS = ("login", "active", "save", "train_start", "recognize_all")
+KINDS = ("login", "active", "save", "train_start", "recognize_all", "upload", "create_manuscript")
 
 
 def save_diff(old_lines: list[dict], new_lines: list[dict]) -> dict:
@@ -85,7 +87,7 @@ def summarize(events: list[dict], trainings: list[dict] | None = None) -> dict:
         if name not in users:
             users[name] = dict(user=name, active_minutes=0, days=set(), logins=0, first_seen=None, last_seen=None,
                                lines_approved=0, lines_corrected=0, lines_edited=0, lines_added=0, lines_deleted=0,
-                               lines_unapproved=0, pages=0, manuscripts=set(), trainings_started=0,
+                               lines_unapproved=0, pages=0, manuscripts=set(), trainings_started=0, pages_uploaded=0,
                                per_day=defaultdict(lambda: {"minutes": 0, "approved": 0}))
         return users[name]
 
@@ -121,6 +123,8 @@ def summarize(events: list[dict], trainings: list[dict] | None = None) -> dict:
             pages[name].add((e.get("slug"), e.get("page")))
         elif kind == "train_start":
             s["trainings_started"] += 1
+        elif kind == "upload":
+            s["pages_uploaded"] += 1
 
     by_user_trainings: dict[str, list] = defaultdict(list)
     for t in trainings or []:
@@ -148,7 +152,7 @@ def empty_stats(name: str) -> dict:
     """A user with no activity in the period (so an admin sees everyone)."""
     return dict(user=name, active_minutes=0, days=0, logins=0, first_seen=None, last_seen=None, lines_approved=0,
                 lines_corrected=0, lines_edited=0, lines_added=0, lines_deleted=0, lines_unapproved=0, pages=0,
-                manuscripts=[], trainings_started=0, per_day=[], approved_per_hour=None, trainings=[])
+                manuscripts=[], trainings_started=0, pages_uploaded=0, per_day=[], approved_per_hour=None, trainings=[])
 
 
 def since_days(days: int) -> datetime:
