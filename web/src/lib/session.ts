@@ -41,8 +41,13 @@ export async function validSession(value: string | undefined): Promise<boolean> 
   return sameString(sig, await hmacHex(`maatik-session|${exp}`));
 }
 
-export async function passwordMatches(given: string): Promise<boolean> {
-  const expected = process.env.MAATIK_WEB_PASSWORD ?? "";
+/** Spaces or a line break around a password (easy to paste into the GitHub secret by
+ *  mistake) do not count, and Unicode is compared in one normal form. */
+const clean = (s: string) => s.normalize("NFC").trim();
+
+export async function passwordMatches(givenRaw: string): Promise<boolean> {
+  const expected = clean(process.env.MAATIK_WEB_PASSWORD ?? "");
+  const given = clean(givenRaw);
   if (!expected) return false;
   // Compare digests so the comparison takes the same time whatever the length.
   const [a, b] = await Promise.all([hmacHex(`pw|${given}`), hmacHex(`pw|${expected}`)]);

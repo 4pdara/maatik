@@ -1,4 +1,5 @@
 import { safeNext } from "@/lib/session";
+import { PasswordField } from "./PasswordField";
 
 export const dynamic = "force-dynamic";
 
@@ -17,11 +18,7 @@ export default async function Login({ searchParams }: { searchParams: Promise<{ 
           <h1 className="title m-0">כניסה</h1>
         </div>
         <input type="hidden" name="next" value={safeNext(next)} />
-        <label className="grid gap-2">
-          <span>סיסמה</span>
-          <input id="password" name="password" type="password" required autoFocus autoComplete="current-password"
-                 className="field text-[20px]" dir="ltr" />
-        </label>
+        <PasswordField />
         {error && MESSAGES[error] && <p className="m-0 text-danger" role="alert">{MESSAGES[error]}</p>}
         <button className="btn btn-primary btn-big" type="submit">כניסה</button>
       </form>
