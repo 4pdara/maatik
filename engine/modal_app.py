@@ -274,18 +274,24 @@ def feasibility_c(model: str, n_lines: int = 60, epochs: int = 2) -> dict:
 
 
 @app.function(volumes={DATA: volume}, cpu=TRAIN_CPU, memory=TRAIN_MEMORY_MIB, timeout=3 * 3600)
-def calibrate_manuscript(slug: str, epochs: int = 6, n_test: int = 3) -> dict:
+def calibrate_manuscript(slug: str, epochs: int = 6, n_test: int = 3, started_by: str | None = None) -> dict:
     """"Improve the model": train a new version from this manuscript's approved lines."""
     from maatik_engine.calibrate import calibrate
 
     t0 = time.monotonic()
     volume.reload()
     record = {"kind": "calibrate", "slug": slug, "started_at": datetime.now(timezone.utc).isoformat(),
-              "worker": {"cpu": TRAIN_CPU, "memory_mib": TRAIN_MEMORY_MIB}, "max_epochs": epochs}
+              "worker": {"cpu": TRAIN_CPU, "memory_mib": TRAIN_MEMORY_MIB}, "max_epochs": epochs,
+              "started_by": started_by}
     _start_run(slug, record)
     try:
         metrics = calibrate(_ms_dir(slug), MODELS / DEFAULT_MODEL / BASE_MODELS[DEFAULT_MODEL]["filename"],
                             n_test=n_test, epochs=epochs, threads=int(TRAIN_CPU) - 2, workers=2)
+        if started_by:
+            # Who started it, kept with the version for the statistics.
+            mpath = _ms_dir(slug) / "models" / metrics["version"] / "metrics.json"
+            metrics["started_by"] = started_by
+            _write_json(mpath, metrics)
         record.update(status="ok", metrics=metrics)
         if metrics.get("promoted"):
             # The new model is better: read again every page nobody has worked on yet.
@@ -413,6 +419,158 @@ def api():
         call = recognize.spawn(slug, page, model)
         return {"job_id": call.object_id}
 
+    from maatik_engine import activity as act
+    from maatik_engine import users as usr
+
+    USERS = DATA / "users.json"
+    ACTIVITY = DATA / "activity"
+    writer = re.sub(r"[^A-Za-z0-9_-]", "", os.environ.get("MODAL_TASK_ID", "local"))[:64] or "local"
+
+    def load_users() -> dict:
+        return {u["username"]: u for u in _read_json(USERS, [])}
+
+    def save_users(users: dict) -> None:
+        USERS.parent.mkdir(parents=True, exist_ok=True)
+        _write_json(USERS, sorted(users.values(), key=lambda u: u["created_at"]))
+
+    def actor(request: Request) -> str | None:
+        """The logged-in person, as passed on by the website (which holds the API token)."""
+        name = request.headers.get("x-maatik-user", "")
+        return name if usr.USERNAME_RE.match(name) else None
+
+    def log(request: Request | None, kind: str, *, user: str | None = None, commit: bool = False, **fields) -> None:
+        name = user or (actor(request) if request else None)
+        if not name:
+            return
+        act.append(ACTIVITY, {"user": name, "kind": kind, **{k: v for k, v in fields.items() if v is not None}},
+                   writer=writer)
+        if commit:
+            volume.commit()
+
+    def require_admin(request: Request, users: dict) -> str:
+        name = actor(request)
+        if not name or users.get(name, {}).get("role") != "admin" or users[name].get("disabled"):
+            raise HTTPException(status_code=403, detail="רק מנהל יכול לעשות את זה")
+        return name
+
+    @web.get("/v1/users")
+    def list_users():
+        fresh()
+        return [usr.public(u) for u in load_users().values()]
+
+    @web.get("/v1/users/{username}")
+    def get_user(username: str):
+        fresh()
+        u = load_users().get(username)
+        if not u:
+            raise HTTPException(status_code=404, detail="no such user")
+        return usr.public(u)
+
+    @web.post("/v1/users")
+    async def create_user(request: Request):
+        """Create a user. The very first user is created by the website's setup page
+        (which checks the site password) and is always an admin."""
+        body = await request.json()
+        fresh(0)
+        users = load_users()
+        first = not users
+        by = None if first else require_admin(request, users)
+        role = "admin" if first else body.get("role", "editor")
+        problem = usr.validate_new(body.get("username", ""), body.get("display_name", ""),
+                                   body.get("password", ""), role)
+        if problem:
+            raise HTTPException(status_code=422, detail=problem)
+        if body["username"] in users:
+            raise HTTPException(status_code=409, detail="שם המשתמש תפוס")
+        users[body["username"]] = usr.new_user(body["username"], body["display_name"], body["password"], role, by)
+        save_users(users)
+        volume.commit()
+        return usr.public(users[body["username"]])
+
+    @web.put("/v1/users/{username}")
+    async def update_user(username: str, request: Request):
+        """An admin changes anything; a user may change their own name and password."""
+        body = await request.json()
+        fresh(0)
+        users = load_users()
+        if username not in users:
+            raise HTTPException(status_code=404, detail="no such user")
+        me = actor(request)
+        is_admin = bool(me and users.get(me, {}).get("role") == "admin")
+        if not is_admin and me != username:
+            raise HTTPException(status_code=403, detail="אפשר לשנות רק את הפרטים שלך")
+        u = users[username]
+        if "display_name" in body:
+            name = str(body["display_name"]).strip()
+            if not (1 <= len(name) <= 60):
+                raise HTTPException(status_code=422, detail="שם לתצוגה: 1 עד 60 תווים")
+            u["display_name"] = name
+        if "password" in body:
+            pw = usr.clean_password(str(body["password"]))
+            if len(pw) < usr.MIN_PASSWORD:
+                raise HTTPException(status_code=422, detail=f"סיסמה: לפחות {usr.MIN_PASSWORD} תווים")
+            u["password_hash"] = usr.hash_password(pw)
+            u["password_changed_at"] = usr.now_iso()
+        for key in ("role", "disabled"):
+            if key in body:
+                if not is_admin:
+                    raise HTTPException(status_code=403, detail="רק מנהל יכול לשנות תפקיד או חסימה")
+                if key == "role" and body["role"] not in usr.ROLES:
+                    raise HTTPException(status_code=422, detail="תפקיד לא מוכר")
+                u[key] = bool(body[key]) if key == "disabled" else body[key]
+        admins = [x for x in users.values() if x["role"] == "admin" and not x.get("disabled")]
+        if not admins:
+            raise HTTPException(status_code=422, detail="חייב להישאר לפחות מנהל אחד פעיל")
+        save_users(users)
+        volume.commit()
+        return usr.public(u)
+
+    @web.post("/v1/auth/verify")
+    async def verify(request: Request):
+        body = await request.json()
+        fresh()
+        u = load_users().get(str(body.get("username", "")).strip().lower())
+        ok = bool(u and not u.get("disabled")
+                  and usr.check_password(usr.clean_password(str(body.get("password", ""))), u["password_hash"]))
+        if not ok:
+            raise HTTPException(status_code=401, detail="שם המשתמש או הסיסמה לא נכונים")
+        log(None, "login", user=u["username"], commit=True)
+        return usr.public(u)
+
+    @web.post("/v1/activity")
+    async def post_activity(request: Request):
+        """The editor reports a minute of real work (kind "active")."""
+        body = await request.json()
+        if body.get("kind") != "active" or not actor(request):
+            raise HTTPException(status_code=422, detail="only kind=active, with a user")
+        slug = body.get("slug") if isinstance(body.get("slug"), str) and SLUG_RE.match(body["slug"]) else None
+        page = body.get("page") if isinstance(body.get("page"), int) else None
+        log(request, "active", slug=slug, page=page, commit=True)
+        return {"ok": True}
+
+    @web.get("/v1/stats")
+    def stats(request: Request, days: int = 30):
+        """Work statistics per user. An admin sees everyone; anyone else only themselves."""
+        if not (1 <= days <= 366):
+            raise HTTPException(status_code=400, detail="days 1..366")
+        fresh()
+        users = load_users()
+        me = actor(request)
+        trainings = []
+        for m in (DATA / "manuscripts").glob("*/models/v*/metrics.json"):
+            met = _read_json(m)
+            if met and met.get("started_by"):
+                trainings.append(dict(met, slug=m.parents[2].name))
+        out = act.summarize(act.read(ACTIVITY, act.since_days(days)), trainings)
+        for s in out["users"]:
+            u = users.get(s["user"], {})
+            s["display_name"] = u.get("display_name", s["user"])
+            s["role"] = u.get("role")
+        if not (me and users.get(me, {}).get("role") == "admin"):
+            out["users"] = [s for s in out["users"] if s["user"] == me]
+        out["days"] = days
+        return out
+
     def check_slug(slug: str) -> None:
         if not SLUG_RE.match(slug):
             raise HTTPException(status_code=400, detail="bad slug")
@@ -463,12 +621,13 @@ def api():
         return {"name": m.get("name"), "page_labels": m.get("page_labels", {})}
 
     @web.post("/v1/manuscripts/{slug}/recognize-all")
-    def recognize_all(slug: str):
+    def recognize_all(slug: str, request: Request):
         """Recognise every page nobody has worked on yet, with the active model."""
         check_slug(slug)
         fresh()
         pages = _untouched_pages(slug)
         jobs = {str(n): recognize.spawn(slug, n, "active").object_id for n in pages}
+        log(request, "recognize_all", slug=slug, pages=len(pages), commit=True)
         return {"pages": pages, "jobs": jobs}
 
     @web.get("/v1/manuscripts/{slug}/training")
@@ -620,6 +779,9 @@ def api():
         lines.sort(key=lambda l: l["order"])
         for i, l in enumerate(lines):
             l["order"] = i
+        changes = act.save_diff(current["lines"], lines)
+        if any(changes.values()):
+            log(request, "save", slug=slug, page=page, changes=changes)
         body = {"schema_version": 1, "revision": current["revision"] + 1, "image": current["image"], "lines": lines,
                 "removed_lines": [l for i, l in known.items() if i not in seen][-500:]}
         _write_json(path, body)
@@ -660,7 +822,7 @@ def api():
         return Response(thumb.read_bytes(), media_type="image/jpeg")
 
     @web.post("/v1/manuscripts/{slug}/calibrate")
-    def start_calibrate(slug: str, epochs: int = 6):
+    def start_calibrate(slug: str, request: Request, epochs: int = 6):
         check(slug, 1)
         if not (1 <= epochs <= 60):
             raise HTTPException(status_code=400, detail="epochs 1..60")
@@ -670,9 +832,11 @@ def api():
         if t and job_state(t["job_id"])["status"] == "running":
             raise HTTPException(status_code=409, detail={"message": "a training run is already going",
                                                          "job_id": t["job_id"]})
-        call = calibrate_manuscript.spawn(slug, epochs)
-        _write_json(tpath, {"job_id": call.object_id, "epochs": epochs,
+        who = actor(request)
+        call = calibrate_manuscript.spawn(slug, epochs, 3, who)
+        _write_json(tpath, {"job_id": call.object_id, "epochs": epochs, "started_by": who,
                             "started_at": datetime.now(timezone.utc).isoformat()})
+        log(request, "train_start", slug=slug, job_id=call.object_id)
         volume.commit()
         return {"job_id": call.object_id}
 
