@@ -6,6 +6,7 @@ Only the filters that might help reading manuscripts are here:
     no_shadow  "ללא צללים"   - shadows and uneven light removed, the paper keeps its tone
     magic      "צבע קסם"     - bright page, deeper text, livelier colour, sharper
     pro        "מקצועי"      - strongest clean-up: denoise, white background, crisp ink
+    invert     "היפוך צבעים" - a negative of "paper" (light ink on dark): may help the eye on faded ink
 
 The stored scan is never changed: a filter makes a copy. Whether a filter is used for
 recognition is decided by measurement (see filter_experiment in modal_app.py).
@@ -17,7 +18,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-FILTERS = ("paper", "no_shadow", "magic", "pro")
+FILTERS = ("paper", "no_shadow", "magic", "pro", "invert")
 BACKGROUND_EDGE = 900.0
 PAPER_LIGHTNESS = 128.0
 
@@ -33,6 +34,8 @@ def apply(rgb: np.ndarray, name: str) -> np.ndarray:
         return _magic_color(rgb) if _is_paper(rgb) else _rich_colour(rgb)
     if name == "pro":
         return _pro(rgb) if _is_paper(rgb) else _rich_colour(rgb)
+    if name == "invert":
+        return cv2.bitwise_not(_clean_paper(rgb))
     raise ValueError(f"unknown filter {name}")
 
 
