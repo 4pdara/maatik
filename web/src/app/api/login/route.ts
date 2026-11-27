@@ -12,11 +12,9 @@ function clientKey(req: NextRequest): string {
   return (req.headers.get("x-forwarded-for") ?? "").split(",")[0].trim() || "local";
 }
 
-function redirectTo(req: NextRequest, path: string) {
-  // Behind Modal's proxy the request URL is internal; build the address from the forwarded host.
-  const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? req.nextUrl.host;
-  const proto = req.headers.get("x-forwarded-proto") ?? req.nextUrl.protocol.replace(":", "");
-  return NextResponse.redirect(`${proto}://${host}${path}`, 303);
+function redirectTo(_req: NextRequest, path: string) {
+  // A relative redirect: behind Modal's proxy the server does not know its public address.
+  return new NextResponse(null, { status: 303, headers: { Location: path } });
 }
 
 export async function POST(req: NextRequest) {

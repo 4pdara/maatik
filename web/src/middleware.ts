@@ -16,9 +16,10 @@ export async function middleware(req: NextRequest) {
   if (req.nextUrl.pathname.startsWith("/api/")) {
     return NextResponse.json({ detail: "צריך להתחבר מחדש. רענן את העמוד." }, { status: 401 });
   }
-  // Build the address from the forwarded host: behind Modal's proxy the request URL is internal.
-  const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? req.nextUrl.host;
-  const proto = req.headers.get("x-forwarded-proto") ?? req.nextUrl.protocol.replace(":", "");
-  const next = encodeURIComponent(req.nextUrl.pathname + req.nextUrl.search);
-  return NextResponse.redirect(`${proto}://${host}/login?next=${next}`);
+  // Show the login page at the requested address (a rewrite, not a redirect): behind
+  // Modal's proxy the server does not know its own public address.
+  const url = req.nextUrl.clone();
+  url.pathname = "/login";
+  url.search = `?next=${encodeURIComponent(req.nextUrl.pathname + req.nextUrl.search)}`;
+  return NextResponse.rewrite(url, { headers: { "Cache-Control": "no-store" } });
 }
