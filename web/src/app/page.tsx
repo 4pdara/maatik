@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { SignInAgain } from "@/components/SignInAgain";
+import { NewManuscript } from "@/components/NewManuscript";
 import { TopBar } from "@/components/TopBar";
 import { engineJson } from "@/lib/engine-server";
 import { currentUser } from "@/lib/auth-server";
@@ -22,7 +23,10 @@ export default async function Home() {
     <>
       <TopBar user={user} />
       <main className="gutter mx-auto max-w-[1100px] py-10">
-        <h1 className="title mb-6">כתבי היד</h1>
+        <div className="mb-6 flex flex-wrap items-center gap-4">
+          <h1 className="title m-0 flex-1">כתבי היד</h1>
+          <NewManuscript />
+        </div>
         {error && (
           <p className="border border-line bg-surface p-4">
             לא הצלחתי לקרוא את רשימת כתבי היד מהמנוע. {error}

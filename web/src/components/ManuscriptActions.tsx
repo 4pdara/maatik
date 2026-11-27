@@ -30,6 +30,7 @@ export function ManuscriptActions({ slug, unrecognized }: { slug: string; unreco
   return (
     <>
       <a className="link" href={`/api/engine/v1/manuscripts/${slug}/export.txt`} target="_blank" rel="noreferrer">ייצוא לטקסט</a>
+      <a className="btn" href={`/m/${slug}/capture`}>צלם עמודים</a>
       <button className="btn" onClick={recognize} disabled={busy}
               title="מזהה עם המודל הפעיל את כל העמודים שאין בהם עדיין עבודה שלך">
         {unrecognized ? `זהה ${unrecognized} עמודים שלא זוהו` : "זהה עמודים שלא הוגהו"}

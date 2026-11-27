@@ -11,7 +11,7 @@ interface UserStats {
   user: string; display_name: string; role: string | null; active_minutes: number; days: number; logins: number;
   first_seen: string | null; last_seen: string | null; lines_approved: number; lines_corrected: number; lines_edited: number;
   lines_added: number; lines_deleted: number; lines_unapproved: number; pages: number; manuscripts: string[];
-  trainings_started: number; approved_per_hour: number | null; trainings: Training[];
+  trainings_started: number; pages_uploaded: number; approved_per_hour: number | null; trainings: Training[];
   per_day: { day: string; minutes: number; approved: number }[];
 }
 
@@ -56,7 +56,7 @@ export default async function Stats({ searchParams }: { searchParams: Promise<{ 
             <table className="num w-full min-w-[900px] border-collapse text-[17px]">
               <thead>
                 <tr className="text-[15px] text-muted">
-                  {["משתמש", "זמן עבודה", "ימים", "שורות שאושרו", "מתוכן תוקנו", "נוספו", "נמחקו", "עמודים", "שורות לשעה", "אימונים", "פעיל לאחרונה"].map((h) => (
+                  {["משתמש", "זמן עבודה", "ימים", "שורות שאושרו", "מתוכן תוקנו", "נוספו", "נמחקו", "עמודים", "עמודים שצולמו", "שורות לשעה", "אימונים", "פעיל לאחרונה"].map((h) => (
                     <th key={h} className="border-b border-line p-2 text-start font-medium">{h}</th>
                   ))}
                 </tr>
@@ -75,6 +75,7 @@ export default async function Stats({ searchParams }: { searchParams: Promise<{ 
                     <td className="border-b border-line p-2">{r.lines_added}</td>
                     <td className="border-b border-line p-2">{r.lines_deleted}</td>
                     <td className="border-b border-line p-2">{r.pages}</td>
+                    <td className="border-b border-line p-2">{r.pages_uploaded ?? 0}</td>
                     <td className="border-b border-line p-2">{r.approved_per_hour ?? "—"}</td>
                     <td className="border-b border-line p-2">{r.trainings_started}</td>
                     <td className="border-b border-line p-2 text-[15px]">{when(r.last_seen)}</td>

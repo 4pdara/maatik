@@ -20,9 +20,10 @@ const ALLOWED: Record<string, RegExp[]> = {
   PUT: [
     new RegExp(`^v1/manuscripts/${SLUG}/pages/\\d{1,4}$`), new RegExp(`^v1/manuscripts/${SLUG}/meta$`),
     /^v1\/users\/[a-z0-9][a-z0-9._-]{1,31}$/,
+    new RegExp(`^v1/manuscripts/${SLUG}/pages/\\d{1,4}/image$`),
   ],
   POST: [
-    /^v1\/(users|activity)$/,
+    /^v1\/(users|activity|manuscripts)$/,
     new RegExp(`^v1/manuscripts/${SLUG}/(calibrate|recognize-all)$`),
     new RegExp(`^v1/manuscripts/${SLUG}/pages/\\d{1,4}/(recognize|reading-order)$`),
   ],
