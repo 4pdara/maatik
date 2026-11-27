@@ -1,0 +1,28 @@
+/* Design tokens, from docs/DESIGN.md ("דף וקולמוס"). Components use only these. */
+:root {
+  --paper: #f4efe6;
+  --surface: #fbf8f2;
+  --scan-bg: #efe7d6;
+  --ink: #221d16;
+  --ink-muted: #6b6257;
+  --line: #ddd3c2;
+  --line-strong: #b8ad98;
+  --accent: #1e3557;
+  --accent-ink: #ffffff;
+  --accent-tint: #dfe6f0;
+  --doubt-bg: #f7e7bf;
+  --doubt-line: #8a5a00;
+  --danger: #9b2c1f;
+
+  --font-ui: "David Libre", "David", "Times New Roman", serif;
+  --font-text: "Frank Ruhl Libre", "David", "Times New Roman", serif;
+
+  --radius: 2px;
+  --pop-shadow: 0 4px 16px rgba(34, 29, 22, 0.12);
+  --gutter: 40px;
+  color-scheme: light;
+}
+
+@media (max-width: 640px) {
+  :root { --gutter: 16px; }
+}
