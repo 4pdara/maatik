@@ -562,6 +562,8 @@ def api():
             if met and met.get("started_by"):
                 trainings.append(dict(met, slug=m.parents[2].name))
         out = act.summarize(act.read(ACTIVITY, act.since_days(days)), trainings)
+        seen = {s["user"] for s in out["users"]}
+        out["users"] += [act.empty_stats(n) for n in users if n not in seen]
         for s in out["users"]:
             u = users.get(s["user"], {})
             s["display_name"] = u.get("display_name", s["user"])

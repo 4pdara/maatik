@@ -1,6 +1,8 @@
 import Link from "next/link";
+import { SignInAgain } from "@/components/SignInAgain";
 import { TopBar } from "@/components/TopBar";
 import { ManuscriptActions } from "@/components/ManuscriptActions";
+import { currentUser } from "@/lib/auth-server";
 import { engineJson } from "@/lib/engine-server";
 import type { Manuscript, PageSummary } from "@/lib/types";
 
@@ -15,6 +17,8 @@ function pageState(p: PageSummary): { text: string; cls: string } {
 
 export default async function ManuscriptPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
+  const user = await currentUser();
+  if (!user) return <SignInAgain />;
   let ms: Manuscript, pages: PageSummary[];
   try {
     [ms, pages] = await Promise.all([
@@ -35,7 +39,7 @@ export default async function ManuscriptPage({ params }: { params: Promise<{ slu
 
   return (
     <>
-      <TopBar crumbs={<b className="text-[17px] font-medium text-ink">{ms.name ?? slug}</b>}>
+      <TopBar user={user} crumbs={<b className="text-[17px] font-medium text-ink">{ms.name ?? slug}</b>}>
         <ManuscriptActions slug={slug} unrecognized={unrecognized} />
       </TopBar>
       <main className="gutter py-8">

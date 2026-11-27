@@ -10,7 +10,7 @@ import { REGION_LABEL } from "@/lib/types";
 import { MarkedText, doubtfulWords } from "./doubt";
 import { LineCards } from "./LineCards";
 import { ScanView } from "./ScanView";
-import { TopBar } from "./TopBar";
+import { TopBar, type BarUser } from "./TopBar";
 import { TrainingDialog } from "./TrainingDialog";
 import { Toast, useToast } from "./Toast";
 
@@ -20,8 +20,8 @@ type SaveState = { kind: "saved" | "pending" | "saving" } | { kind: "error"; mes
 const ICON = { size: 18, strokeWidth: 1.5 } as const;
 const sortLines = (ls: Line[]) => [...ls].sort((a, b) => a.order - b.order).map((l, i) => ({ ...l, order: i }));
 
-export function Editor({ slug, pageNo, manuscript, pages }: {
-  slug: string; pageNo: number; manuscript: Manuscript; pages: number[];
+export function Editor({ slug, pageNo, manuscript, pages, user }: {
+  slug: string; pageNo: number; manuscript: Manuscript; pages: number[]; user?: BarUser | null;
 }) {
   const [page, setPage] = useState<Page | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -112,6 +112,23 @@ export function Editor({ slug, pageNo, manuscript, pages }: {
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => { saveTimer.current = null; void doSave(); }, ms);
   }
+
+  // Working time: once a minute, if the person typed or clicked in the last two minutes and
+  // the page is visible, tell the engine. Idle time is not counted.
+  useEffect(() => {
+    let last = Date.now();
+    const touch = () => { last = Date.now(); };
+    const events = ["keydown", "pointerdown", "input", "wheel"] as const;
+    events.forEach((ev) => addEventListener(ev, touch, { passive: true }));
+    const t = setInterval(() => {
+      if (document.visibilityState !== "visible" || Date.now() - last > 120_000) return;
+      void fetch("/api/engine/v1/activity", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "active", slug, page: pageNo }),
+      }).catch(() => { /* a missed minute is not worth an error */ });
+    }, 60_000);
+    return () => { clearInterval(t); events.forEach((ev) => removeEventListener(ev, touch)); };
+  }, [slug, pageNo]);
 
   useEffect(() => {
     const warn = (e: BeforeUnloadEvent) => { if (dirty.current || inFlight.current) e.preventDefault(); };
@@ -265,7 +282,7 @@ export function Editor({ slug, pageNo, manuscript, pages }: {
 
   return (
     <div className={`flex min-h-dvh flex-col ${mode === "side" ? "lg:h-dvh" : ""}`}>
-      <TopBar crumbs={crumbs}>
+      <TopBar crumbs={crumbs} user={user}>
         <div className="flex" role="group" aria-label="תצוגה">
           {(["side", "lines"] as Mode[]).map((m) => (
             <button key={m} className={`btn min-h-10 ${mode === m ? "border-2 border-accent bg-accent-tint" : ""} ${m === "side" ? "rounded-e-none" : "rounded-s-none border-s-0"}`}

@@ -32,15 +32,18 @@ export function engineBase(): string {
   return url.replace(/\/+$/, "");
 }
 
-export async function engineFetch(path: string, init: RequestInit = {}): Promise<Response> {
+export async function engineFetch(path: string, init: RequestInit = {}, user?: string): Promise<Response> {
   await useProxyIfConfigured();
   const headers = new Headers(init.headers);
   headers.set("Authorization", `Bearer ${apiToken()}`);
+  // Who is acting, for the engine's activity log and permissions. Set only here, on the server.
+  headers.delete("X-Maatik-User");
+  if (user) headers.set("X-Maatik-User", user);
   return fetch(`${engineBase()}${path}`, { ...init, headers, cache: "no-store" });
 }
 
-export async function engineJson<T>(path: string): Promise<T> {
-  const r = await engineFetch(path);
+export async function engineJson<T>(path: string, user?: string): Promise<T> {
+  const r = await engineFetch(path, {}, user);
   if (!r.ok) throw new Error(`המנוע החזיר ${r.status} עבור ${path}`);
   return (await r.json()) as T;
 }

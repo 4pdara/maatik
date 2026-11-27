@@ -61,3 +61,8 @@ def test_summary_counts_minutes_once_and_joins_trainings(tmp_path):
     assert s["uriel"]["pages"] == 1 and s["uriel"]["logins"] == 1 and s["uriel"]["trainings_started"] == 1
     assert s["uriel"]["trainings"][0]["version"] == "v3"
     assert s["dina"]["active_minutes"] == 1 and s["dina"]["lines_approved"] == 0
+
+
+def test_empty_stats_has_every_summary_field():
+    full = activity.summarize([{"ts": "2026-11-27T10:00:00+00:00", "user": "a", "kind": "login"}])["users"][0]
+    assert set(activity.empty_stats("b")) == set(full)

@@ -1,19 +1,22 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
 
-/** The password field, with "show password" and a warning when the keyboard is typing Hebrew. */
-export function PasswordField() {
+/** A password field, with "show password" and warnings for a Hebrew keyboard or Caps Lock. */
+export function PasswordField({ name = "password", label = "סיסמה", autoComplete = "current-password", autoFocus = false }: {
+  name?: string; label?: string; autoComplete?: string; autoFocus?: boolean;
+}) {
+  const id = useId();
   const [show, setShow] = useState(false);
   const [hebrew, setHebrew] = useState(false);
   const [caps, setCaps] = useState(false);
   return (
     <div className="grid gap-2">
-      <label htmlFor="password">סיסמה</label>
-      <input id="password" name="password" type={show ? "text" : "password"} required autoFocus
-             autoComplete="current-password" spellCheck={false} autoCapitalize="off" autoCorrect="off"
+      <label htmlFor={id}>{label}</label>
+      <input id={id} name={name} type={show ? "text" : "password"} required autoFocus={autoFocus}
+             autoComplete={autoComplete} spellCheck={false} autoCapitalize="off" autoCorrect="off"
              className="field text-[20px]" dir="ltr"
-             onChange={(e) => setHebrew(/[\u0590-\u05ff]/.test(e.target.value))}
+             onChange={(e) => setHebrew(/[֐-׿]/.test(e.target.value))}
              onKeyUp={(e) => setCaps(e.getModifierState?.("CapsLock") ?? false)} />
       <label className="inline-flex cursor-pointer items-center gap-2 text-[15px]">
         <input type="checkbox" className="h-[18px] w-[18px] accent-[var(--accent)]" checked={show}

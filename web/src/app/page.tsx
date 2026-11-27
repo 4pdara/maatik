@@ -1,13 +1,16 @@
 import Link from "next/link";
+import { SignInAgain } from "@/components/SignInAgain";
 import { TopBar } from "@/components/TopBar";
 import { engineJson } from "@/lib/engine-server";
-import { authMode } from "@/lib/session";
+import { currentUser } from "@/lib/auth-server";
 
 export const dynamic = "force-dynamic";
 
 interface Row { slug: string; name: string | null; active_model: string | null; pages: number }
 
 export default async function Home() {
+  const user = await currentUser();
+  if (!user) return <SignInAgain />;
   let rows: Row[] = [];
   let error: string | null = null;
   try {
@@ -17,11 +20,7 @@ export default async function Home() {
   }
   return (
     <>
-      <TopBar>
-        {authMode() === "on" && (
-          <form method="post" action="/api/logout"><button className="link" type="submit">יציאה</button></form>
-        )}
-      </TopBar>
+      <TopBar user={user} />
       <main className="gutter mx-auto max-w-[1100px] py-10">
         <h1 className="title mb-6">כתבי היד</h1>
         {error && (

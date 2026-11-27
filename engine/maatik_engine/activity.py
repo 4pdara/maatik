@@ -144,5 +144,12 @@ def summarize(events: list[dict], trainings: list[dict] | None = None) -> dict:
     return {"users": sorted(out, key=lambda s: s["last_seen"] or "", reverse=True)}
 
 
+def empty_stats(name: str) -> dict:
+    """A user with no activity in the period (so an admin sees everyone)."""
+    return dict(user=name, active_minutes=0, days=0, logins=0, first_seen=None, last_seen=None, lines_approved=0,
+                lines_corrected=0, lines_edited=0, lines_added=0, lines_deleted=0, lines_unapproved=0, pages=0,
+                manuscripts=[], trainings_started=0, per_day=[], approved_per_hour=None, trainings=[])
+
+
 def since_days(days: int) -> datetime:
     return datetime.now(timezone.utc) - timedelta(days=days)
