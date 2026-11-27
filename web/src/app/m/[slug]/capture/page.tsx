@@ -7,8 +7,11 @@ import type { Manuscript, PageSummary } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
-export default async function CapturePage({ params }: { params: Promise<{ slug: string }> }) {
+export default async function CapturePage({ params, searchParams }: {
+  params: Promise<{ slug: string }>; searchParams: Promise<{ shared?: string }>;
+}) {
   const { slug } = await params;
+  const shared = Math.max(0, Math.min(500, Number((await searchParams).shared) || 0));
   const user = await currentUser();
   if (!user) return <SignInAgain />;
   try {
@@ -21,7 +24,7 @@ export default async function CapturePage({ params }: { params: Promise<{ slug: 
       <>
         <TopBar user={user} />
         <main className="gutter mx-auto max-w-[1000px] py-6">
-          <Capture slug={slug} name={ms.name ?? slug} firstPage={next} />
+          <Capture slug={slug} name={ms.name ?? slug} firstPage={next} shared={shared} />
         </main>
       </>
     );

@@ -38,6 +38,8 @@ public class MainActivity extends Activity {
     private WebView web;
     private ValueCallback<Uri[]> pendingFiles;
     private Uri cameraUri;
+    /** Files shared to the app, waiting for the site's "upload what was shared" button. */
+    private final ArrayList<Uri> shared = new ArrayList<>();
 
     @Override
     protected void onCreate(Bundle saved) {
@@ -99,6 +101,13 @@ public class MainActivity extends Activity {
             public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback, FileChooserParams params) {
                 if (pendingFiles != null) {
                     pendingFiles.onReceiveValue(null);
+                    pendingFiles = null;
+                }
+                // The site's "upload ready files" input (it accepts PDF) gets the shared files directly.
+                if (!shared.isEmpty() && !params.isCaptureEnabled() && acceptsPdf(params)) {
+                    callback.onReceiveValue(shared.toArray(new Uri[0]));
+                    shared.clear();
+                    return true;
                 }
                 pendingFiles = callback;
                 try {
@@ -111,11 +120,71 @@ public class MainActivity extends Activity {
             }
         });
 
-        if (saved != null) {
+        if (takeShared(getIntent())) {
+            web.loadUrl(SITE + "share?n=" + shared.size());
+        } else if (saved != null) {
             web.restoreState(saved);
         } else {
             web.loadUrl(SITE);
         }
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        if (takeShared(intent)) {
+            web.loadUrl(SITE + "share?n=" + shared.size());
+        }
+    }
+
+    /** Keeps the files of a "share" intent (one or many images, or a PDF). True if there were any. */
+    private boolean takeShared(Intent intent) {
+        if (intent == null) {
+            return false;
+        }
+        String action = intent.getAction();
+        if (!Intent.ACTION_SEND.equals(action) && !Intent.ACTION_SEND_MULTIPLE.equals(action)) {
+            return false;
+        }
+        ArrayList<Uri> got = new ArrayList<>();
+        ClipData clip = intent.getClipData();
+        if (clip != null) {
+            for (int i = 0; i < clip.getItemCount(); i++) {
+                if (clip.getItemAt(i).getUri() != null) {
+                    got.add(clip.getItemAt(i).getUri());
+                }
+            }
+        }
+        if (got.isEmpty()) {
+            if (Intent.ACTION_SEND.equals(action)) {
+                Uri one = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+                if (one != null) {
+                    got.add(one);
+                }
+            } else {
+                ArrayList<Uri> many = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
+                if (many != null) {
+                    got.addAll(many);
+                }
+            }
+        }
+        intent.setAction(Intent.ACTION_MAIN); // handled once, also after the activity is recreated
+        if (got.isEmpty()) {
+            return false;
+        }
+        shared.clear();
+        shared.addAll(got);
+        return true;
+    }
+
+    private static boolean acceptsPdf(WebChromeClient.FileChooserParams params) {
+        for (String t : params.getAcceptTypes()) {
+            if (t != null && t.contains("application/pdf")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** "Take a photo" on the site opens the camera; "choose photos" offers the gallery and the camera. */
@@ -127,6 +196,10 @@ public class MainActivity extends Activity {
         Intent pick = new Intent(Intent.ACTION_GET_CONTENT);
         pick.addCategory(Intent.CATEGORY_OPENABLE);
         pick.setType("image/*");
+        if (acceptsPdf(params)) {
+            pick.setType("*/*");
+            pick.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"image/*", "application/pdf"});
+        }
         pick.putExtra(Intent.EXTRA_ALLOW_MULTIPLE,
                 params.getMode() == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE);
         Intent chooser = Intent.createChooser(pick, getString(R.string.choose_image));

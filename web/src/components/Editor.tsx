@@ -15,6 +15,12 @@ import { TrainingDialog } from "./TrainingDialog";
 import { Toast, useToast } from "./Toast";
 
 type Mode = "side" | "lines";
+type ScanFilter = "original" | "no_shadow" | "paper" | "magic" | "invert";
+// DocScan's filters, for reading a hard passage. Measured on Toledano: none of them helps
+// recognition (STATUS.md), so they only change what the person sees.
+const VIEW_LABEL: Record<ScanFilter, string> = {
+  original: "מקור", no_shadow: "ללא צללים", paper: "ניקוי נייר", magic: "צבע קסם", invert: "נגטיב",
+};
 type SaveState = { kind: "saved" | "pending" | "saving" } | { kind: "error"; message: string; conflict: boolean };
 
 const ICON = { size: 18, strokeWidth: 1.5 } as const;
@@ -29,6 +35,8 @@ export function Editor({ slug, pageNo, manuscript, pages, user }: {
   const [mode, setMode] = useState<Mode>("side");
   const [zoom, setZoom] = useState(1);
   const [showOrder, setShowOrder] = useState(false);
+  // How the scan is shown, for reading only. Recognition and training always use the scan itself.
+  const [view, setView] = useState<ScanFilter>("original");
   const [drawing, setDrawing] = useState<Point[] | null>(null);
   const [save, setSave] = useState<SaveState>({ kind: "saved" });
   const [trainOpen, setTrainOpen] = useState(false);
@@ -46,7 +54,13 @@ export function Editor({ slug, pageNo, manuscript, pages, user }: {
   // ---------------------------------------------------------------- load
   useEffect(() => {
     try { const m = localStorage.getItem("maatik-mode"); if (m === "side" || m === "lines") setMode(m); } catch { /* no storage */ }
+    try { const v = localStorage.getItem("maatik-view") as ScanFilter | null; if (v && v in VIEW_LABEL) setView(v); } catch { /* no storage */ }
   }, []);
+  function changeView(v: ScanFilter) {
+    setView(v);
+    try { localStorage.setItem("maatik-view", v); } catch { /* no storage */ }
+  }
+  const scanSrc = imageUrl(slug, pageNo) + (view === "original" ? "" : `?filter=${view}`);
 
   useEffect(() => {
     let cancelled = false;
@@ -313,6 +327,13 @@ export function Editor({ slug, pageNo, manuscript, pages, user }: {
             <div className="flex flex-wrap items-center gap-2">
               <span className="subtitle">הסריקה</span>
               <span className="flex-1" />
+              <label className="inline-flex items-center gap-2 text-[15px]" title="לקריאה בלבד. הזיהוי והאימון תמיד על הסריקה עצמה.">
+                תצוגה
+                <select className="border border-line bg-surface px-2 py-0.5 text-[15px] text-ink" value={view}
+                        onChange={(e) => changeView(e.target.value as ScanFilter)}>
+                  {(Object.keys(VIEW_LABEL) as ScanFilter[]).map((v) => <option key={v} value={v}>{VIEW_LABEL[v]}</option>)}
+                </select>
+              </label>
               <label className="inline-flex cursor-pointer items-center gap-2 text-[15px]">
                 <input type="checkbox" className="h-[18px] w-[18px] accent-[var(--accent)]" checked={showOrder} onChange={(e) => setShowOrder(e.target.checked)} />
                 סדר קריאה
@@ -327,7 +348,7 @@ export function Editor({ slug, pageNo, manuscript, pages, user }: {
                 <button className="link" onClick={() => setDrawing(null)}>ביטול</button>
               </div>
             )}
-            <ScanView src={imageUrl(slug, pageNo)} width={page.image.width} height={page.image.height} lines={lines}
+            <ScanView src={scanSrc} width={page.image.width} height={page.image.height} lines={lines}
                       activeId={activeId} zoom={zoom} showOrder={showOrder} drawing={drawing}
                       onPick={(id) => { setActiveId(id); lastEdited.current = null; focusField(); }} onPoint={addPoint} />
           </section>
@@ -351,7 +372,16 @@ export function Editor({ slug, pageNo, manuscript, pages, user }: {
 
       {page && mode === "lines" && (
         <main className="gutter flex-1 py-5">
-          <LineCards src={imageUrl(slug, pageNo)} page={page} kinds={kinds} activeId={activeId}
+          <div className="mx-auto mb-3 flex max-w-[1000px] justify-end">
+            <label className="inline-flex items-center gap-2 text-[15px]" title="לקריאה בלבד. הזיהוי והאימון תמיד על הסריקה עצמה.">
+              תצוגת הסריקה
+              <select className="border border-line bg-surface px-2 py-0.5 text-[15px] text-ink" value={view}
+                      onChange={(e) => changeView(e.target.value as ScanFilter)}>
+                {(Object.keys(VIEW_LABEL) as ScanFilter[]).map((v) => <option key={v} value={v}>{VIEW_LABEL[v]}</option>)}
+              </select>
+            </label>
+          </div>
+          <LineCards src={scanSrc} page={page} kinds={kinds} activeId={activeId}
                      onPick={(id) => { setActiveId(id); lastEdited.current = null; focusField(); }}
                      editor={active && (
                        <LineEditor line={active} index={idx} total={lines.length} fieldRef={field} size={24} inCard

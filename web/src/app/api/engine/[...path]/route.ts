@@ -46,11 +46,11 @@ async function pass(req: NextRequest, ctx: { params: Promise<{ path: string[] }>
     }
   }
   try {
-    let r = await engineFetch(`/${joined}${req.nextUrl.search}`, init, user.username);
+    let r = await engineFetch(`/${joined}${req.nextUrl.search}`, init, user.username === "local" ? undefined : user.username);
     // A read can fail for a moment while the engine's storage refreshes; try once more.
     if (req.method === "GET" && (r.status === 404 || r.status >= 500)) {
       await new Promise((ok) => setTimeout(ok, 400));
-      r = await engineFetch(`/${joined}${req.nextUrl.search}`, init, user.username);
+      r = await engineFetch(`/${joined}${req.nextUrl.search}`, init, user.username === "local" ? undefined : user.username);
     }
     const headers = new Headers();
     const type = r.headers.get("content-type");

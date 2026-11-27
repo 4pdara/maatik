@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Plus } from "lucide-react";
 
 /** "New manuscript": a name, then straight to photographing its pages. */
-export function NewManuscript() {
+export function NewManuscript({ sharedCount = 0 }: { sharedCount?: number }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -23,7 +23,7 @@ export function NewManuscript() {
       });
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(typeof data.detail === "string" ? data.detail : `שגיאה ${r.status}`);
-      router.push(`/m/${data.slug}/capture`);
+      router.push(`/m/${data.slug}/capture${sharedCount ? `?shared=${sharedCount}` : ""}`);
     } catch (err) {
       setError((err as Error).message);
       setBusy(false);

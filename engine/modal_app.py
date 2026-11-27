@@ -844,7 +844,13 @@ def api():
         return {"revision": body["revision"]}
 
     @web.get("/v1/manuscripts/{slug}/pages/{page}/image")
-    def get_image(slug: str, page: int):
+    def get_image(slug: str, page: int, filter: str = "original"):
+        """The scan. With `filter`, a filtered copy made on the fly for reading in the editor:
+        nothing is written, and recognition and training always use the scan itself."""
+        from maatik_engine import filters as flt
+
+        if filter != "original" and filter not in flt.FILTERS:
+            raise HTTPException(status_code=400, detail="unknown filter")
         check(slug, page)
         path = _page_dir(slug) / f"{page:04d}.jpg"
         # Scans never change, so reload the volume only for a scan this container has not seen.
@@ -853,7 +859,15 @@ def api():
             fresh()
         if not path.exists():
             raise HTTPException(status_code=404, detail="no such page")
-        return Response(path.read_bytes(), media_type="image/jpeg")
+        if filter == "original":
+            return Response(path.read_bytes(), media_type="image/jpeg")
+        import cv2
+        import numpy as np
+
+        bgr = cv2.imdecode(np.frombuffer(path.read_bytes(), np.uint8), cv2.IMREAD_COLOR)
+        out = flt.apply(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), filter)
+        ok, buf = cv2.imencode(".jpg", cv2.cvtColor(out, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 88])
+        return Response(buf.tobytes(), media_type="image/jpeg")
 
     @web.get("/v1/manuscripts/{slug}/pages/{page}/thumb")
     def get_thumb(slug: str, page: int):

@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Camera, ImagePlus, RotateCw, Maximize, Check, SkipForward } from "lucide-react";
+import { Camera, ImagePlus, RotateCw, Maximize, Check, SkipForward, FileUp } from "lucide-react";
+import { readyPages } from "@/lib/ready-pages";
 import { outputSize, warp, type Pt } from "@/lib/warp";
 
 const ICON = { size: 20, strokeWidth: 1.5 } as const;
@@ -12,7 +13,7 @@ const MAX_OUTPUT = 3000; // long side of the page we upload
 type Done = { page: number; url: string; state: "uploading" | "recognizing" | "ready" | "failed"; lines?: number; error?: string };
 
 /** Photograph pages (or pick photos), mark the page corners, straighten, upload, recognise. */
-export function Capture({ slug, name, firstPage }: { slug: string; name: string; firstPage: number }) {
+export function Capture({ slug, name, firstPage, shared = 0 }: { slug: string; name: string; firstPage: number; shared?: number }) {
   const [queue, setQueue] = useState<File[]>([]);
   const [img, setImg] = useState<ImageBitmap | HTMLCanvasElement | null>(null);
   const [corners, setCorners] = useState<Pt[]>([]);
@@ -22,6 +23,27 @@ export function Capture({ slug, name, firstPage }: { slug: string; name: string;
   const nextPage = useRef(firstPage);
   const camera = useRef<HTMLInputElement>(null);
   const gallery = useRef<HTMLInputElement>(null);
+  const ready = useRef<HTMLInputElement>(null);
+  const [readyNote, setReadyNote] = useState<string | null>(null);
+  const [sharedLeft, setSharedLeft] = useState(shared);
+
+  /** Already-cropped pages (a DocScan PDF, or images): uploaded in order, without marking corners. */
+  async function addReady(files: FileList | null) {
+    if (!files?.length) return;
+    setError(null);
+    setSharedLeft(0);
+    try {
+      setReadyNote("מכין את העמודים…");
+      const pages = await readyPages(Array.from(files), setReadyNote);
+      if (!pages.length) { setError("לא מצאתי תמונות או PDF בקבצים שנבחרו."); return; }
+      setReadyNote(`מעלה ${pages.length} עמודים…`);
+      for (const blob of pages) await upload(blob, URL.createObjectURL(blob), false);
+      setReadyNote(null);
+    } catch (e) {
+      setError(`לא הצלחתי לפתוח את הקבצים: ${(e as Error).message}`);
+      setReadyNote(null);
+    }
+  }
 
   // Load the first photo in the queue, downscaled, upright (EXIF orientation applied).
   useEffect(() => {
@@ -97,7 +119,9 @@ export function Capture({ slug, name, firstPage }: { slug: string; name: string;
     }
   }
 
-  const upload = useCallback(async (blob: Blob, url: string) => {
+  /** Upload one page, then start its recognition. With `wait` false it returns once the page is
+   *  uploaded and recognition was asked for, so the next page can start uploading. */
+  const upload = useCallback(async (blob: Blob, url: string, wait = true) => {
     let page = nextPage.current++;
     const set = (p: number, patch: Partial<Done>) => setDone((d) => d.map((x) => (x.page === p ? { ...x, ...patch } : x)));
     setDone((d) => [{ page, url, state: "uploading" }, ...d]);
@@ -118,13 +142,21 @@ export function Capture({ slug, name, firstPage }: { slug: string; name: string;
       }
       set(page, { state: "recognizing" });
       const job = await (await fetch(`/api/engine/v1/manuscripts/${slug}/pages/${page}/recognize`, { method: "POST" })).json();
-      for (let i = 0; i < 120; i++) {
-        await new Promise((ok) => setTimeout(ok, 5000));
-        const s = await (await fetch(`/api/engine/v1/jobs/${job.job_id}`)).json();
-        if (s.status === "done") { set(page, { state: "ready", lines: s.result?.summary?.lines }); return; }
-        if (s.status === "failed") throw new Error("הזיהוי נכשל");
-      }
-      throw new Error("הזיהוי לוקח יותר מדי זמן");
+      const p = page;
+      const follow = (async () => {
+        try {
+          for (let i = 0; i < 120; i++) {
+            await new Promise((ok) => setTimeout(ok, 5000));
+            const s = await (await fetch(`/api/engine/v1/jobs/${job.job_id}`)).json();
+            if (s.status === "done") { set(p, { state: "ready", lines: s.result?.summary?.lines }); return; }
+            if (s.status === "failed") throw new Error("הזיהוי נכשל");
+          }
+          throw new Error("הזיהוי לוקח יותר מדי זמן");
+        } catch (e) {
+          set(p, { state: "failed", error: (e as Error).message });
+        }
+      })();
+      if (wait) await follow;
     } catch (e) {
       set(page, { state: "failed", error: (e as Error).message });
     }
@@ -140,11 +172,29 @@ export function Capture({ slug, name, firstPage }: { slug: string; name: string;
       {/* Hidden file inputs: the camera (on a phone) and the gallery. */}
       <input ref={camera} type="file" accept="image/*" capture="environment" hidden onChange={(e) => { add(e.target.files); e.target.value = ""; }} />
       <input ref={gallery} type="file" accept="image/*" multiple hidden onChange={(e) => { add(e.target.files); e.target.value = ""; }} />
+      <input ref={ready} type="file" accept="image/*,application/pdf" multiple hidden data-ready-files
+             onChange={(e) => { void addReady(e.target.files); e.target.value = ""; }} />
+
+      {sharedLeft > 0 && !img && (
+        <div className="grid gap-3 border border-accent bg-accent-tint p-4">
+          <p className="m-0">
+            {sharedLeft === 1 ? "קובץ אחד שותף" : `${sharedLeft} קבצים שותפו`} למעתיק (למשל מ-DocScan). הם כבר חתוכים, ויעלו כמו שהם,
+            עמוד אחרי עמוד, מעמוד <span className="num">{nextPage.current}</span>.
+          </p>
+          <button className="btn btn-primary btn-big justify-self-start" onClick={() => ready.current?.click()}>
+            <FileUp {...ICON} /> העלה את מה ששותף
+          </button>
+        </div>
+      )}
 
       {!img && (
         <div className="grid gap-3 sm:flex sm:flex-wrap">
           <button className="btn btn-primary btn-big" onClick={() => camera.current?.click()}><Camera {...ICON} /> צלם עמוד</button>
           <button className="btn btn-big" onClick={() => gallery.current?.click()}><ImagePlus {...ICON} /> בחר תמונות מהגלריה</button>
+          <button className="btn btn-big" onClick={() => ready.current?.click()}
+                  title="עמודים שכבר נחתכו ויושרו, למשל PDF או תמונות מ-DocScan: עולים בלי סימון פינות">
+            <FileUp {...ICON} /> העלה PDF או תמונות מוכנים
+          </button>
           {queue.length > 0 && <span className="eyebrow self-center">פותח את התמונה…</span>}
         </div>
       )}
@@ -155,6 +205,7 @@ export function Capture({ slug, name, firstPage }: { slug: string; name: string;
         </p>
       )}
       {error && <p className="m-0 text-danger" role="alert">{error}</p>}
+      {readyNote && <p className="m-0 text-muted" aria-live="polite">{readyNote}</p>}
 
       {img && (
         <div className="grid gap-3">

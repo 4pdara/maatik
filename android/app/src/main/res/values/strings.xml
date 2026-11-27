@@ -2,4 +2,5 @@
 <resources>
     <string name="app_name">מעתיק</string>
     <string name="choose_image">בחר תמונה</string>
+    <string name="share_label">העלאה למעתיק</string>
 </resources>
