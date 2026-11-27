@@ -609,8 +609,11 @@ def api():
     @web.get("/v1/manuscripts/{slug}/pages/{page}/image")
     def get_image(slug: str, page: int):
         check(slug, page)
-        volume.reload()
         path = _page_dir(slug) / f"{page:04d}.jpg"
+        # Scans never change, so reload the volume only for a scan this container has not seen.
+        # (Reloading on every request, with several requests in flight, made files look missing.)
+        if not path.exists():
+            volume.reload()
         if not path.exists():
             raise HTTPException(status_code=404, detail="no such page")
         return FileResponse(path, media_type="image/jpeg")
@@ -621,11 +624,14 @@ def api():
         from PIL import Image
 
         check(slug, page)
-        volume.reload()
         src = _page_dir(slug) / f"{page:04d}.jpg"
+        thumb = _page_dir(slug) / f"{page:04d}.thumb.jpg"
+        if thumb.exists():
+            return FileResponse(thumb, media_type="image/jpeg")
+        if not src.exists():
+            volume.reload()
         if not src.exists():
             raise HTTPException(status_code=404, detail="no such page")
-        thumb = _page_dir(slug) / f"{page:04d}.thumb.jpg"
         if not thumb.exists():
             with Image.open(src) as im:
                 im.thumbnail((360, 540))
