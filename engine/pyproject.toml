@@ -19,6 +19,7 @@ dependencies = [
 api = ["fastapi==0.165.0"]
 client = ["requests==2.34.2"]
 align = ["rapidfuzz==3.14.6"]
+filters = ["opencv-python-headless==4.14.0.94"]
 dev = ["pytest==9.0.1"]
 
 [project.scripts]

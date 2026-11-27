@@ -55,7 +55,7 @@ image = (
         "torchvision==0.29.1",
         index_url="https://download.pytorch.org/whl/cpu",
     )
-    .uv_pip_install("kraken==7.2", "fastapi==0.165.0", "huggingface_hub==1.16.1")
+    .uv_pip_install("kraken==7.2", "fastapi==0.165.0", "huggingface_hub==1.16.1", "opencv-python-headless==4.14.0.94")
     .run_commands(
         *[
             cmd
@@ -300,6 +300,37 @@ def calibrate_manuscript(slug: str, epochs: int = 6, n_test: int = 3, started_by
             for n in pages:
                 recognize.spawn(slug, n, "active")
             record["rerecognize_pages"] = pages
+    except Exception as e:  # noqa: BLE001
+        record.update(status="failed", error=str(e)[:2000])
+        raise
+    finally:
+        seconds = round(time.monotonic() - t0, 2)
+        record.update(seconds=seconds, estimated_usd=_estimate_usd(seconds, TRAIN_CPU, TRAIN_MEMORY_MIB))
+        _log_run(slug, record)
+        volume.commit()
+    return record
+
+
+@app.function(volumes={DATA: volume}, cpu=TRAIN_CPU, memory=TRAIN_MEMORY_MIB, timeout=3600)
+def filter_experiment(slug: str) -> dict:
+    """CER on the test pages with each DocScan filter, for the base and the active model."""
+    from maatik_engine import filter_experiment as fe
+    from maatik_engine.calibrate import active_model_path
+
+    t0 = time.monotonic()
+    volume.reload()
+    base = MODELS / DEFAULT_MODEL / BASE_MODELS[DEFAULT_MODEL]["filename"]
+    manuscript = _read_json(_ms_dir(slug) / "manuscript.json", {})
+    models = {"base": base}
+    active, name = active_model_path(_ms_dir(slug), manuscript, base)
+    if name != "base":
+        models[name] = active
+    record = {"kind": "filter-experiment", "slug": slug, "started_at": datetime.now(timezone.utc).isoformat(),
+              "worker": {"cpu": TRAIN_CPU, "memory_mib": TRAIN_MEMORY_MIB}, "models": list(models)}
+    _start_run(slug, record)
+    try:
+        result = fe.run(_ms_dir(slug), models, threads=int(TRAIN_CPU))
+        record.update(status="ok", result=result)
     except Exception as e:  # noqa: BLE001
         record.update(status="failed", error=str(e)[:2000])
         raise
@@ -844,6 +875,12 @@ def api():
                 im.convert("RGB").save(thumb, "JPEG", quality=80)
             volume.commit()
         return Response(thumb.read_bytes(), media_type="image/jpeg")
+
+    @web.post("/v1/manuscripts/{slug}/experiments/filters")
+    def start_filter_experiment(slug: str):
+        """Measure each page filter on the test pages (nothing in the manuscript changes)."""
+        check_slug(slug)
+        return {"job_id": filter_experiment.spawn(slug).object_id}
 
     @web.post("/v1/manuscripts/{slug}/calibrate")
     def start_calibrate(slug: str, request: Request, epochs: int = 6):

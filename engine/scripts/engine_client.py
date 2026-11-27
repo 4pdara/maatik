@@ -11,6 +11,7 @@ Env:  MAATIK_ENGINE_URL  e.g. https://<workspace>--maatik-engine-api.modal.run
     python engine/scripts/engine_client.py calibrate SLUG [--epochs 30]
     python engine/scripts/engine_client.py e2e [--pages 8 --n-test 2 --epochs 10]
     python engine/scripts/engine_client.py runs SLUG
+    python engine/scripts/engine_client.py filters SLUG     # CER on the test pages per DocScan filter
 """
 
 import argparse
@@ -54,6 +55,8 @@ def main() -> None:
     e = sub.add_parser("e2e")
     e.add_argument("--pages", type=int, default=8); e.add_argument("--n-test", type=int, default=2)
     e.add_argument("--epochs", type=int, default=10); e.add_argument("--wait", type=int, default=3 * 3600)
+    fx = sub.add_parser("filters")
+    fx.add_argument("slug"); fx.add_argument("--wait", type=int, default=3600)
     for name in ("pages", "models"):
         sub.add_parser(name).add_argument("slug")
     sub.add_parser("manuscripts")
@@ -79,6 +82,8 @@ def main() -> None:
         t0 = time.monotonic()
         if a.cmd == "calibrate":
             resp = s.post(f"{base}/v1/manuscripts/{a.slug}/calibrate", params={"epochs": a.epochs}, timeout=120)
+        elif a.cmd == "filters":
+            resp = s.post(f"{base}/v1/manuscripts/{a.slug}/experiments/filters", timeout=120)
         elif a.cmd == "e2e":
             resp = s.post(f"{base}/v1/e2e/synthetic", timeout=120,
                           params={"pages": a.pages, "n_test": a.n_test, "epochs": a.epochs})
