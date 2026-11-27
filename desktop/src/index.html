@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>מעתיק</title>
+<style>
+  /* Colours from docs/DESIGN.md. This page shows for a moment, or when there is no connection. */
+  :root { --paper: #f4efe6; --ink: #221d16; --ink-muted: #6b6257; --accent: #1e3557; --accent-ink: #ffffff; color-scheme: light; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--paper); color: var(--ink); font-family: "David Libre", "David", "Times New Roman", serif;
+         font-size: 17px; line-height: 26px; display: grid; place-items: center; }
+  main { display: grid; gap: 16px; max-width: 420px; padding-inline: 16px; text-align: start; }
+  .brand { font-size: 26px; font-weight: 700; }
+  .muted { color: var(--ink-muted); }
+  button { font: inherit; min-height: 44px; padding-inline: 20px; border: 1px solid var(--accent); border-radius: 2px;
+           background: var(--accent); color: var(--accent-ink); font-weight: 700; cursor: pointer; justify-self: start; }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <span class="brand">מעתיק</span>
+  <p id="wait">מתחבר…</p>
+  <div id="offline" hidden>
+    <p>אין חיבור לאתר של מעתיק. בדוק שהמחשב מחובר לאינטרנט ונסה שוב.</p>
+    <p class="muted" id="addr"></p>
+    <button id="retry" type="button">נסה שוב</button>
+  </div>
+</main>
+<script>
+  // The site's address. Changed only together with the deployment (web/modal_web.py).
+  const SITE = "https://pdara--maatik-web.us-east.modal.run/";
+  document.getElementById("addr").textContent = SITE;
+
+  async function go() {
+    document.getElementById("wait").hidden = false;
+    document.getElementById("offline").hidden = true;
+    try {
+      // Any answer means the site is reachable (an opaque reply is enough).
+      await fetch(SITE + "login", { mode: "no-cors", cache: "no-store" });
+      location.replace(SITE);
+    } catch {
+      document.getElementById("wait").hidden = true;
+      document.getElementById("offline").hidden = false;
+      document.getElementById("retry").focus();
+    }
+  }
+  document.getElementById("retry").addEventListener("click", go);
+  go();
+</script>
+</body>
+</html>

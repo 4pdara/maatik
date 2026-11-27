@@ -1,0 +1,45 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Maatik",
+  "mainBinaryName": "Maatik",
+  "version": "0.1.0",
+  "identifier": "app.maatik.desktop",
+  "build": {
+    "frontendDist": "../src"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "מעתיק",
+        "url": "index.html",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 390,
+        "minHeight": 600,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "publisher": "Maatik",
+    "shortDescription": "מעתיק: הגהת תעתוק של כתבי יד",
+    "longDescription": "חלון למחשב לאתר של מעתיק: אותה כניסה ואותם כתבי יד.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}
