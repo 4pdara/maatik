@@ -615,6 +615,24 @@ def api():
             raise HTTPException(status_code=404, detail="no such page")
         return FileResponse(path, media_type="image/jpeg")
 
+    @web.get("/v1/manuscripts/{slug}/pages/{page}/thumb")
+    def get_thumb(slug: str, page: int):
+        """A small copy of the scan for page lists (made once, kept next to the scan)."""
+        from PIL import Image
+
+        check(slug, page)
+        volume.reload()
+        src = _page_dir(slug) / f"{page:04d}.jpg"
+        if not src.exists():
+            raise HTTPException(status_code=404, detail="no such page")
+        thumb = _page_dir(slug) / f"{page:04d}.thumb.jpg"
+        if not thumb.exists():
+            with Image.open(src) as im:
+                im.thumbnail((360, 540))
+                im.convert("RGB").save(thumb, "JPEG", quality=80)
+            volume.commit()
+        return FileResponse(thumb, media_type="image/jpeg")
+
     @web.post("/v1/manuscripts/{slug}/calibrate")
     def start_calibrate(slug: str, epochs: int = 6):
         check(slug, 1)
