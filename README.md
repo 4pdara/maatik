@@ -29,7 +29,7 @@
 | `engine/` | המנוע: חבילת Python עם Kraken (זיהוי ואימון), והמעטפת ל-Modal (`modal_app.py`) עם ה-API. בדיקות ב-`engine/tests`. |
 | `web/` | האתר והעורך: Next.js 15. רץ ב-Modal (`web/modal_web.py`) או מקומית. הוראות: [web/README.md](web/README.md). |
 | `desktop/` | התוכנה למחשב: Tauri 2. חלון שפותח את האתר. |
-| `docs/` | אפיון, עיצוב וסיכונים. |
+| `docs/` | אפיון, עיצוב וסיכונים. `docs/research/`: סקרים (למשל מודלים חלופיים). |
 | `.github/workflows/` | פריסה אוטומטית (פירוט בהמשך). |
 
 ## פריסה (אוטומטית)
