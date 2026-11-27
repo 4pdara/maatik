@@ -347,7 +347,9 @@ def api():
     import os
 
     from fastapi import Depends, FastAPI, HTTPException, Request
-    from fastapi.responses import FileResponse, PlainTextResponse
+    import asyncio
+
+    from fastapi.responses import PlainTextResponse, Response
 
     from maatik_engine.auth import token_matches
 
@@ -364,6 +366,24 @@ def api():
 
     web = FastAPI(dependencies=[Depends(auth)], docs_url=None, redoc_url=None, openapi_url=None)
 
+    # One request at a time per container. Reloading the volume while another request
+    # of the same container was reading made files and whole directories look missing
+    # (empty page lists, 404 on scans). Requests are short, and file bodies are read
+    # into memory inside the lock, so nothing is read during a reload.
+    one_at_a_time = asyncio.Lock()
+    last_reload = [0.0]
+
+    @web.middleware("http")
+    async def serialize(request: Request, call_next):
+        async with one_at_a_time:
+            return await call_next(request)
+
+    def fresh(max_age: float = 1.0) -> None:
+        """See other containers' commits (training, recognition), at most once a second."""
+        if time.monotonic() - last_reload[0] > max_age:
+            volume.reload()
+            last_reload[0] = time.monotonic()
+
     @web.get("/v1/health")
     def health():
         return {"ok": True}
@@ -377,7 +397,7 @@ def api():
         if not body.startswith(b"\xff\xd8"):
             raise HTTPException(status_code=415, detail="JPEG only for now")
         dest = _page_dir(slug) / f"{page:04d}.jpg"
-        volume.reload()
+        fresh()
         if dest.exists():
             raise HTTPException(status_code=409, detail="page exists; originals are never replaced")
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -409,7 +429,7 @@ def api():
     @web.get("/v1/manuscripts/{slug}")
     def get_manuscript(slug: str):
         check_slug(slug)
-        volume.reload()
+        fresh()
         d = _ms_dir(slug)
         if not d.exists():
             raise HTTPException(status_code=404, detail="no such manuscript")
@@ -423,7 +443,7 @@ def api():
         """Set the display name and page labels (e.g. folio numbers). Nothing else."""
         check_slug(slug)
         body = await request.json()
-        volume.reload()
+        fresh(0)
         path = _ms_dir(slug) / "manuscript.json"
         if not _ms_dir(slug).exists():
             raise HTTPException(status_code=404, detail="no such manuscript")
@@ -446,7 +466,7 @@ def api():
     def recognize_all(slug: str):
         """Recognise every page nobody has worked on yet, with the active model."""
         check_slug(slug)
-        volume.reload()
+        fresh()
         pages = _untouched_pages(slug)
         jobs = {str(n): recognize.spawn(slug, n, "active").object_id for n in pages}
         return {"pages": pages, "jobs": jobs}
@@ -456,7 +476,7 @@ def api():
         """State of "improve the model": the running or last job, its epochs so far,
         and how many approved lines were added since the last trained version."""
         check_slug(slug)
-        volume.reload()
+        fresh()
         d = _ms_dir(slug)
         t = _read_json(d / "training.json")
         versions = [_read_json(v / "metrics.json") for v in (d / "models").glob("v*")]
@@ -483,7 +503,7 @@ def api():
         from maatik_engine import pagejson as pj
 
         check_slug(slug)
-        volume.reload()
+        fresh()
         m = _read_json(_ms_dir(slug) / "manuscript.json", {})
         labels = m.get("page_labels", {})
         parts = []
@@ -500,7 +520,7 @@ def api():
         from maatik_engine.layout import reading_order
 
         check(slug, page)
-        volume.reload()
+        fresh(0)
         path = _page_dir(slug) / f"{page:04d}.json"
         pg = _read_json(path)
         if pg is None:
@@ -516,7 +536,7 @@ def api():
 
     @web.get("/v1/manuscripts")
     def list_manuscripts():
-        volume.reload()
+        fresh()
         root = DATA / "manuscripts"
         out = []
         for d in sorted(root.iterdir()) if root.exists() else []:
@@ -529,7 +549,7 @@ def api():
     @web.get("/v1/manuscripts/{slug}/pages")
     def list_pages(slug: str):
         check(slug, 1)
-        volume.reload()
+        fresh()
         m = _read_json(_ms_dir(slug) / "manuscript.json", {})
         labels = m.get("page_labels", {})
         test = set((m.get("split") or {}).get("test", []))
@@ -547,7 +567,7 @@ def api():
     @web.get("/v1/manuscripts/{slug}/pages/{page}")
     def get_page(slug: str, page: int):
         check(slug, page)
-        volume.reload()
+        fresh()
         pg = _read_json(_page_dir(slug) / f"{page:04d}.json")
         if pg is None:
             raise HTTPException(status_code=404, detail="page not recognised yet")
@@ -559,7 +579,7 @@ def api():
         check(slug, page)
         body = await request.json()
         path = _page_dir(slug) / f"{page:04d}.json"
-        volume.reload()
+        fresh(0)
         current = _read_json(path)
         if current is None:
             raise HTTPException(status_code=404, detail="page not recognised yet")
@@ -613,10 +633,10 @@ def api():
         # Scans never change, so reload the volume only for a scan this container has not seen.
         # (Reloading on every request, with several requests in flight, made files look missing.)
         if not path.exists():
-            volume.reload()
+            fresh()
         if not path.exists():
             raise HTTPException(status_code=404, detail="no such page")
-        return FileResponse(path, media_type="image/jpeg")
+        return Response(path.read_bytes(), media_type="image/jpeg")
 
     @web.get("/v1/manuscripts/{slug}/pages/{page}/thumb")
     def get_thumb(slug: str, page: int):
@@ -627,9 +647,9 @@ def api():
         src = _page_dir(slug) / f"{page:04d}.jpg"
         thumb = _page_dir(slug) / f"{page:04d}.thumb.jpg"
         if thumb.exists():
-            return FileResponse(thumb, media_type="image/jpeg")
+            return Response(thumb.read_bytes(), media_type="image/jpeg")
         if not src.exists():
-            volume.reload()
+            fresh()
         if not src.exists():
             raise HTTPException(status_code=404, detail="no such page")
         if not thumb.exists():
@@ -637,14 +657,14 @@ def api():
                 im.thumbnail((360, 540))
                 im.convert("RGB").save(thumb, "JPEG", quality=80)
             volume.commit()
-        return FileResponse(thumb, media_type="image/jpeg")
+        return Response(thumb.read_bytes(), media_type="image/jpeg")
 
     @web.post("/v1/manuscripts/{slug}/calibrate")
     def start_calibrate(slug: str, epochs: int = 6):
         check(slug, 1)
         if not (1 <= epochs <= 60):
             raise HTTPException(status_code=400, detail="epochs 1..60")
-        volume.reload()
+        fresh()
         tpath = _ms_dir(slug) / "training.json"
         t = _read_json(tpath)
         if t and job_state(t["job_id"])["status"] == "running":
@@ -659,7 +679,7 @@ def api():
     @web.get("/v1/manuscripts/{slug}/models")
     def list_models(slug: str):
         check(slug, 1)
-        volume.reload()
+        fresh()
         d = _ms_dir(slug)
         m = _read_json(d / "manuscript.json", {})
         versions = []
@@ -673,7 +693,7 @@ def api():
     @web.get("/v1/storage")
     def storage():
         """Read-only: bytes on the volume per top-level area and per manuscript, and leftovers."""
-        volume.reload()
+        fresh()
 
         def size(p: Path) -> int:
             return sum(f.stat().st_size for f in p.rglob("*") if f.is_file()) if p.exists() else 0
@@ -693,7 +713,7 @@ def api():
     def delete_leftover_checkpoints():
         """Delete only *.ckpt files (intermediate training state left by an interrupted
         run). Scans, page JSON, ALTO and exported model weights are never touched."""
-        volume.reload()
+        fresh()
         deleted = []
         for f in list(DATA.rglob("*.ckpt")) if DATA.exists() else []:
             if f.is_file() and f.suffix == ".ckpt":
@@ -727,17 +747,17 @@ def api():
         check(slug, page)
         if model != "active" and model not in BASE_MODELS:
             raise HTTPException(status_code=400, detail="unknown model")
-        volume.reload()
+        fresh()
         path = _page_dir(slug) / f"{page:04d}.{model}.alto.xml"
         if not path.exists():
             raise HTTPException(status_code=404, detail="no result yet")
-        return FileResponse(path, media_type="application/xml")
+        return Response(path.read_bytes(), media_type="application/xml")
 
     @web.get("/v1/manuscripts/{slug}/runs")
     def runs(slug: str):
         if not SLUG_RE.match(slug):
             raise HTTPException(status_code=400, detail="bad slug")
-        volume.reload()
+        fresh()
         path = DATA / "manuscripts" / slug / "runs.jsonl"
         return PlainTextResponse(path.read_text(encoding="utf-8") if path.exists() else "")
 
