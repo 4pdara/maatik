@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { TopBar } from "@/components/TopBar";
 import { engineJson } from "@/lib/engine-server";
+import { authMode } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
@@ -16,7 +17,11 @@ export default async function Home() {
   }
   return (
     <>
-      <TopBar />
+      <TopBar>
+        {authMode() === "on" && (
+          <form method="post" action="/api/logout"><button className="link" type="submit">יציאה</button></form>
+        )}
+      </TopBar>
       <main className="gutter mx-auto max-w-[1100px] py-10">
         <h1 className="title mb-6">כתבי היד</h1>
         {error && (

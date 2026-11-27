@@ -1,0 +1,76 @@
+name: deploy-web
+
+# Deploys the website (web/) to Modal as the app maatik-web, with a password login.
+# Needs the repository secrets MODAL_TOKEN_ID, MODAL_TOKEN_SECRET and MAATIK_WEB_PASSWORD
+# (the login password, chosen by the owner). Until MAATIK_WEB_PASSWORD is set, the site is
+# deployed with a random password nobody knows, so it is locked: it never runs open.
+
+on:
+  push:
+    paths:
+      - "web/**"
+      - "!web/README.md"
+      - ".github/workflows/deploy-web.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  statuses: write
+
+concurrency:
+  group: deploy-web
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      MAATIK_WEB_PASSWORD: ${{ secrets.MAATIK_WEB_PASSWORD }}
+    steps:
+      - name: Check the login password
+        id: pw
+        run: |
+          if [ -z "$MAATIK_WEB_PASSWORD" ]; then
+            echo "::warning::The repository secret MAATIK_WEB_PASSWORD is missing: the site is deployed locked, with a random password nobody knows."
+          elif [ "${#MAATIK_WEB_PASSWORD}" -lt 10 ]; then
+            echo "::error::MAATIK_WEB_PASSWORD must be at least 10 characters."
+            exit 1
+          fi
+          echo "ok=true" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        if: steps.pw.outputs.ok == 'true'
+      - uses: actions/setup-python@v7
+        if: steps.pw.outputs.ok == 'true'
+        with:
+          python-version: "3.12"
+      - name: Install Modal client
+        if: steps.pw.outputs.ok == 'true'
+        run: pip install modal==1.6.4
+      - name: Write the password to the Modal secret
+        if: steps.pw.outputs.ok == 'true'
+        run: |
+          python -c "import json, os, secrets; pw = os.environ.get('MAATIK_WEB_PASSWORD') or secrets.token_urlsafe(32); json.dump({'MAATIK_WEB_PASSWORD': pw}, open(os.environ['RUNNER_TEMP'] + '/web.json', 'w'))"
+          modal secret create maatik-web --from-json "$RUNNER_TEMP/web.json" --force > /dev/null
+          rm -f "$RUNNER_TEMP/web.json"
+          echo "secret maatik-web updated"
+      - name: Deploy
+        if: steps.pw.outputs.ok == 'true'
+        working-directory: web
+        run: |
+          modal deploy modal_web.py 2>&1 | tee "$RUNNER_TEMP/deploy.log"
+          test "${PIPESTATUS[0]}" -eq 0
+      - name: Publish the site URL as commit status
+        if: steps.pw.outputs.ok == 'true' && success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          URL=$(grep -o 'https://[a-z0-9-]*--maatik-web\.\([a-z0-9-]*\.\)\?modal\.run' "$RUNNER_TEMP/deploy.log" | head -1)
+          test -n "$URL"
+          curl -sS -f -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+            -d "{\"state\":\"success\",\"context\":\"web-url\",\"target_url\":\"$URL\",\"description\":\"maatik website deployed\"}" > /dev/null
+          echo "Site: $URL"
